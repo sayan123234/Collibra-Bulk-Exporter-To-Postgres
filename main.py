@@ -358,8 +358,11 @@ def flatten_json(asset, asset_type_name):
         flattened[f"User Name Against {asset_type_name}"] = ', '.join(filter(None, user_names)) or None
         flattened[f"User Email Against {asset_type_name}"] = ', '.join(filter(None, user_emails)) or None
 
-    # Process attributes
+    # Process attributes section
     for attr_type in ['multiValueAttributes', 'stringAttributes', 'numericAttributes', 'dateAttributes', 'booleanAttributes']:
+        # Create a temporary dictionary to collect string attributes
+        string_attrs = defaultdict(list)
+        
         for attr in asset.get(attr_type, []):
             attr_name = attr.get('type', {}).get('name')
             if not attr_name:
@@ -370,12 +373,20 @@ def flatten_json(asset, asset_type_name):
                 values = [v.strip() for v in attr.get('stringValues', []) if v and v.strip()]
                 flattened[attr_name] = ', '.join(values) if values else None
             elif attr_type == 'stringAttributes':
+                # Collect string attributes
                 value = attr.get('stringValue', '').strip()
-                flattened[attr_name] = value if value else None
+                if value:
+                    string_attrs[attr_name].append(value)
             else:
                 value_key = f"{attr_type[:-10]}Value"
                 value = attr.get(value_key)
                 flattened[attr_name] = str(value) if value is not None else None
+        
+        # Process collected string attributes
+        for attr_name, values in string_attrs.items():
+            # Remove duplicates while preserving order
+            unique_values = list(dict.fromkeys(values))
+            flattened[attr_name] = ', '.join(unique_values) if len(unique_values) > 0 else None
 
     # Process relations
     relation_types = defaultdict(list)
