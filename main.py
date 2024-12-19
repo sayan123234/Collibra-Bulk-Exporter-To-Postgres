@@ -334,7 +334,7 @@ def process_data(asset_type_id, limit=94):
 
 def flatten_json(asset, asset_type_name):
     """
-    Flatten the JSON for database storage with enhanced null handling
+    Flatten the JSON for database storage with enhanced null handling and relation IDs
     """
     flattened = {
         f"UUID of Asset": asset['id'],
@@ -388,8 +388,10 @@ def flatten_json(asset, asset_type_name):
             unique_values = list(dict.fromkeys(values))
             flattened[attr_name] = ', '.join(unique_values) if len(unique_values) > 0 else None
 
-    # Process relations
+    # Process relations with separate name and ID tracking
     relation_types = defaultdict(list)
+    relation_ids = defaultdict(list)
+    
     for relation_direction in ['outgoingRelations', 'incomingRelations']:
         for relation in asset.get(relation_direction, []):
             role_or_corole = 'role' if relation_direction == 'outgoingRelations' else 'corole'
@@ -401,12 +403,21 @@ def flatten_json(asset, asset_type_name):
             else:
                 rel_type = f"{relation.get(target_or_source, {}).get('type', {}).get('name')} {role_type} {asset_type_name}"
             
-            display_name = relation.get(target_or_source, {}).get('displayName', '')
-            if display_name and display_name.strip():
-                relation_types[rel_type].append(display_name.strip())
+            target_source_obj = relation.get(target_or_source, {})
+            display_name = target_source_obj.get('displayName', '').strip()
+            asset_id = target_source_obj.get('id')
+            
+            if display_name:
+                relation_types[rel_type].append(display_name)
+                if asset_id:
+                    relation_ids[f"{rel_type} Asset IDs"].append(asset_id)
 
-    # Add relations to flattened data, using None if no values
-    flattened.update({rel_type: ', '.join(values) if values else None for rel_type, values in relation_types.items()})
+    # Add relations and their IDs to flattened data
+    for rel_type, values in relation_types.items():
+        flattened[rel_type] = ', '.join(values) if values else None
+        id_key = f"{rel_type} Asset IDs"
+        if id_key in relation_ids:
+            flattened[id_key] = ', '.join(relation_ids[id_key]) if relation_ids[id_key] else None
 
     # Final pass to remove any remaining None or empty string values
     for key, value in list(flattened.items()):
@@ -414,6 +425,14 @@ def flatten_json(asset, asset_type_name):
             flattened[key] = None
 
     return flattened
+
+def is_empty(value):
+    """Helper function to check if a value should be considered empty"""
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    return False
 
 def process_asset_type(asset_type_id):
     start_time = time.time()

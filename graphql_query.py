@@ -53,6 +53,7 @@ def get_query(asset_type_id, paginate):
             }}
             outgoingRelations (limit: 50) {{
                 target {{
+                    id
                     fullName
                     displayName
                     type {{
@@ -65,6 +66,7 @@ def get_query(asset_type_id, paginate):
             }}
             incomingRelations (limit: 50) {{
                 source {{
+                    id
                     fullName
                     displayName
                     type {{
