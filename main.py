@@ -2,6 +2,9 @@ import os
 import json
 import time
 import logging
+import sys
+import codecs
+import locale
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 
@@ -16,6 +19,14 @@ from graphql_query import get_query
 from get_assetType_name import get_asset_type_name
 from OauthAuth import oauth_bearer_token
 from get_asset_type import get_available_asset_type
+
+# Set console encoding to UTF-8
+if sys.platform == 'win32':
+    # For Windows, force UTF-8 encoding
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, errors='replace')
+    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, errors='replace')
+    # Set console code page to UTF-8
+    os.system('chcp 65001')
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -33,8 +44,18 @@ SessionLocal = sessionmaker(bind=engine)
 metadata = MetaData()
 
 # Load asset type IDs
-with open('Collibra_Asset_Type_Id_Manager.json', 'r') as file:
+with open('Collibra_Asset_Type_Id_Manager.json', 'r', encoding='utf-8') as file:
     data = json.load(file)
+
+# For logging:
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('app.log', encoding='utf-8', errors='replace')
+    ]
+)
 
 ASSET_TYPE_IDS = data['ids']
 

@@ -71,7 +71,7 @@ CLIENT_ID=your_client_id
 CLIENT_SECRET=your_client_secret
 
 # PostgreSQL Database Configuration
-DATABASE_URL=postgresql://db_username:your_strong_password@localhost:5432/your_database_name
+DATABASE_URL=postgresql://db_username:your_strong_password@localhost:5432/your_database_name?options=-c%20search_path=your_schema_name
 ```
 
 ### 5. Update Asset Type IDs
