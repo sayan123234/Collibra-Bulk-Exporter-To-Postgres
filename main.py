@@ -28,8 +28,15 @@ if sys.platform == 'win32':
     # Set console code page to UTF-8
     os.system('chcp 65001')
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Setup logging with encoding specification
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('app.log', encoding='utf-8')
+    ]
+)
 
 # Load environment variables
 load_dotenv()
