@@ -82,15 +82,22 @@ def is_empty(value):
     return False
 
 def safe_convert_to_str(value):
+    """Handle special characters and encodings"""
     if value is None:
         return None
+        
     try:
         if isinstance(value, (list, tuple)):
-            return ', '.join(str(v).encode('utf-8', 'replace').decode('utf-8') for v in value if v is not None)
-        return str(value).encode('utf-8', 'replace').decode('utf-8')
+            return ', '.join(str(v).encode('ascii', 'ignore').decode('ascii') for v in value if v is not None)
+        return str(value).encode('ascii', 'ignore').decode('ascii')
     except Exception as e:
-        logging.error(f"Error converting value {value} to string: {e}")
+        logging.error(f"Error converting value to string: {e}")
         return None
+
+def sanitize_identifier(name):
+    """Sanitize table/column names"""
+    return ''.join(c if c.isalnum() or c == '_' else '_' 
+                  for c in name.lower().replace(' ', '_')).encode('ascii', 'ignore').decode('ascii')
 
 def create_table_dynamically(asset_type_name, data):
     """
