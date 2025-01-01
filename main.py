@@ -183,44 +183,39 @@ def create_table_dynamically(asset_type_name, data):
 
 def create_table_if_not_exists(db_session, table_name, columns):
     """
-    Dynamically create a table if it doesn't exist
-    
-    :param db_session: SQLAlchemy session
-    :param table_name: Name of the table to create
-    :param columns: Dictionary of column definitions
+    Dynamically create a table if it doesn't exist with proper timestamp handling
     """
     try:
         # Construct CREATE TABLE statement
         columns_def = []
         
-        # Always add uuid and timestamp columns
+        # Add UUID as the only primary key
         columns_def.append("uuid VARCHAR PRIMARY KEY")
-        columns_def.append("last_modified_on TIMESTAMP")
-        columns_def.append("created_on TIMESTAMP")
         
-        # Add dynamic columns
+        # Add timestamp columns with proper null handling
+        timestamp_columns = [
+            "last_modified_on",
+            "created_on"
+        ]
+        
+        for col in timestamp_columns:
+            columns_def.append(f"{col} TIMESTAMP NULL")
+        
+        # Add dynamic columns with proper null handling
         for col_name, col_type in columns.items():
-            # Sanitize column name
             safe_col_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in col_name.lower().replace(' ', '_'))
-            
-            # Use TIMESTAMP for date columns, VARCHAR for others
-            col_sql_type = "TIMESTAMP" if "created_on" in safe_col_name else "VARCHAR"
-            
-            # Add column definition
+            col_sql_type = "TIMESTAMP" if any(time_word in safe_col_name for time_word in ['created_on', 'modified_on']) else "VARCHAR"
             columns_def.append(f"{safe_col_name} {col_sql_type} NULL")
         
-        # Full CREATE TABLE statement
         create_table_sql = text(f"""
             CREATE TABLE IF NOT EXISTS {table_name} (
                 {', '.join(columns_def)}
             )
         """)
         
-        # Execute table creation
         db_session.execute(create_table_sql)
         db_session.commit()
-        logging.info(f"Ensured table {table_name} exists")
-    
+        
     except Exception as e:
         db_session.rollback()
         logging.error(f"Error creating table {table_name}: {e}")
@@ -228,28 +223,21 @@ def create_table_if_not_exists(db_session, table_name, columns):
 
 def save_to_postgres(asset_type_name, data):
     """
-    Save data to PostgreSQL database with dynamic column handling and null value processing
+    Save data to PostgreSQL with enhanced null handling
     """
     if not data:
         logging.warning(f"No data to save for {asset_type_name}")
         return
 
-    # Sanitize table name
     table_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in f"collibra_{asset_type_name.lower().replace(' ', '_')}")
     
-    # Create a session
     db_session = SessionLocal()
     
     try:
-        # Identify all unique columns across all rows, starting from the first row
-        base_columns = set(data[0].keys()) if data else set()
-        base_columns = {key for key in base_columns if key not in ['UUID of Asset', 'Asset last Modified On']}
-        
-        # Convert base_columns to a dictionary with default type
-        # Use a dictionary comprehension to map column names to a default type (VARCHAR)
+        # Get base columns excluding primary key and timestamps
+        base_columns = set(data[0].keys()) - {'UUID of Asset', 'Asset last Modified On'}
         columns_dict = {col: 'VARCHAR' for col in base_columns}
         
-        # Create table if not exists
         create_table_if_not_exists(db_session, table_name, columns_dict)
         
         # Sanitize column names
@@ -258,57 +246,46 @@ def save_to_postgres(asset_type_name, data):
             for key in base_columns
         }
 
-        # Dynamically construct the insert statement
+        # Construct upsert with proper handling of timestamps
         columns_list = ['uuid', 'last_modified_on'] + list(sanitized_columns.values())
+        placeholders = ', '.join([f':{col}' for col in columns_list])
+        update_columns = ', '.join([f'{col} = EXCLUDED.{col}' for col in columns_list[1:]])
         
-        # Construct parameterized placeholders
-        placeholders = ', '.join([f':{col}' for col in ['uuid', 'last_modified_on'] + list(sanitized_columns.values())])
-        
-        # Construct update columns for conflict resolution
-        update_columns = ', '.join([f'{col} = EXCLUDED.{col}' for col in list(sanitized_columns.values())])
-        
-        # Construct upsert statement using text()
         upsert_stmt = text(f"""
             INSERT INTO {table_name} ({', '.join(columns_list)})
             VALUES ({placeholders})
             ON CONFLICT (uuid) DO UPDATE SET
-                last_modified_on = EXCLUDED.last_modified_on,
                 {update_columns}
         """)
         
-        # Prepare the data for bulk insert
+        # Prepare data with enhanced null handling
         prepared_data = []
         for row in data:
+            if not row.get('UUID of Asset'):
+                logging.warning(f"Skipping row without UUID: {row}")
+                continue
+                
             prepared_row = {
                 'uuid': safe_convert_to_str(row['UUID of Asset']),
                 'last_modified_on': safe_convert_to_str(row['Asset last Modified On'])
             }
             
-            # Add all base columns, even if not present in the row
             for original_key in base_columns:
-                # Use the sanitized column name
                 column_name = sanitized_columns[original_key]
-                
-                # Get value if exists, otherwise None
                 value = row.get(original_key)
                 prepared_row[column_name] = safe_convert_to_str(value)
             
             prepared_data.append(prepared_row)
         
-        # Execute bulk upsert
         if prepared_data:
             db_session.execute(upsert_stmt, prepared_data)
             db_session.commit()
-            logging.info(f"Successfully saved {len(data)} records for {asset_type_name}")
-        else:
-            logging.warning(f"No data to save for {asset_type_name}")
+            logging.info(f"Saved {len(prepared_data)} records for {asset_type_name}")
     
     except Exception as e:
         db_session.rollback()
-        logging.error(f"Error saving data to database for {asset_type_name}: {e}")
-        # Log the full exception details
-        import traceback
-        logging.error(traceback.format_exc())
+        logging.error(f"Error saving data for {asset_type_name}: {e}")
+        raise
     
     finally:
         db_session.close()
@@ -363,19 +340,20 @@ def process_data(asset_type_id, limit=94):
 
 def flatten_json(asset, asset_type_name):
     """
-    Flatten the JSON for database storage with enhanced null handling and relation IDs
+    Flatten the JSON for database storage with enhanced null handling
     """
     flattened = {
-        f"UUID of Asset": asset['id'],
+        "UUID of Asset": asset.get('id'),
+        f"Asset last Modified On": asset.get('modifiedOn'),
         f"{asset_type_name} Full Name": asset.get('fullName'),
         f"{asset_type_name} Name": asset.get('displayName'),
         "Asset Type": asset.get('type', {}).get('name'),
         "Status": asset.get('status', {}).get('name'),
         f"Domain of {asset_type_name}": asset.get('domain', {}).get('name'),
-        f"Community of {asset_type_name}": asset.get('domain', {}).get('parent', {}).get('name') if asset.get('domain', {}).get('parent') else None,
-        f"{asset_type_name} modified on": asset['modifiedOn'],
+        f"Community of {asset_type_name}": asset.get('domain', {}).get('parent', {}).get('name'),
+        f"{asset_type_name} modified on": asset.get('modifiedOn'),
         f"{asset_type_name} last modified By": asset.get('modifiedBy', {}).get('fullName'),
-        f"{asset_type_name} created on": asset['createdOn'],
+        f"{asset_type_name} created on": asset.get('createdOn'),
         f"{asset_type_name} created By": asset.get('createdBy', {}).get('fullName'),
     }
 
