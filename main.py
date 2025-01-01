@@ -186,36 +186,15 @@ def create_table_dynamically(asset_type_name, data):
 
 def create_table_if_not_exists(db_session, table_name, columns):
     try:
+        # Simplify to just create columns based on the flattened data
         columns_def = []
         columns_def.append("uuid VARCHAR PRIMARY KEY")
         
-        timestamp_columns = [
-            "modified_on",
-            "created_on",
-            f"{table_name}_modified_on",
-            f"{table_name}_created_on"
-        ]
-        
-        text_columns = [
-            f"{table_name}_modified_by",
-            f"{table_name}_created_by",
-            "last_modified_by"
-        ]
-        
-        for col in timestamp_columns:
-            columns_def.append(f"{col} TIMESTAMP NULL")
-            
-        for col in text_columns:
-            columns_def.append(f"{col} TEXT NULL")
-        
         for col_name, _ in columns.items():
-            safe_col_name = ''.join(c if c.isalnum() or c == '_' else '_' 
-                                  for c in col_name.lower().replace(' ', '_')).encode('utf-8', 'replace').decode('utf-8')
-            
-            if safe_col_name in timestamp_columns or safe_col_name in text_columns:
-                continue
-                
-            columns_def.append(f"{safe_col_name} TEXT NULL")
+            if col_name != 'UUID of Asset':  # Skip UUID as it's already added
+                safe_col_name = ''.join(c if c.isalnum() or c == '_' else '_' 
+                                      for c in col_name.lower().replace(' ', '_')).encode('utf-8', 'replace').decode('utf-8')
+                columns_def.append(f"{safe_col_name} TEXT NULL")
 
         create_table_sql = text(f"""
             CREATE TABLE IF NOT EXISTS {table_name} (
@@ -241,20 +220,23 @@ def save_to_postgres(asset_type_name, data):
     db_session = SessionLocal()
     
     try:
-        base_columns = set(data[0].keys()) - {'UUID of Asset'}
+        # Get columns from the flattened data
+        base_columns = set(data[0].keys())
         columns_dict = {col: 'TEXT' for col in base_columns}
         
         create_table_if_not_exists(db_session, table_name, columns_dict)
         
+        # Create sanitized column mapping
         sanitized_columns = {
             key: ''.join(c if c.isalnum() or c == '_' else '_' 
                         for c in key.lower().replace(' ', '_')).encode('utf-8', 'replace').decode('utf-8')
             for key in base_columns
         }
 
-        columns_list = ['uuid'] + list(sanitized_columns.values())
+        # Prepare the insert statement
+        columns_list = list(sanitized_columns.values())
         placeholders = ', '.join([f':{col}' for col in columns_list])
-        update_columns = ', '.join([f'{col} = EXCLUDED.{col}' for col in columns_list[1:]])
+        update_columns = ', '.join([f'{col} = EXCLUDED.{col}' for col in columns_list if col != 'uuid'])
         
         upsert_stmt = text(f"""
             INSERT INTO {table_name} ({', '.join(columns_list)})
@@ -263,18 +245,18 @@ def save_to_postgres(asset_type_name, data):
                 {update_columns}
         """)
         
+        # Prepare the data
         prepared_data = []
         for row in data:
             if not row.get('UUID of Asset'):
                 continue
                 
-            prepared_row = {'uuid': safe_convert_to_str(row['UUID of Asset'])}
-            
+            prepared_row = {}
             for original_key in base_columns:
                 column_name = sanitized_columns[original_key]
                 value = row.get(original_key)
                 
-                if any(time_word in column_name for time_word in ['modified_on', 'created_on']):
+                if 'modified_on' in column_name.lower() or 'created_on' in column_name.lower():
                     prepared_row[column_name] = value
                 else:
                     prepared_row[column_name] = safe_convert_to_str(value)
@@ -284,6 +266,7 @@ def save_to_postgres(asset_type_name, data):
         if prepared_data:
             db_session.execute(upsert_stmt, prepared_data)
             db_session.commit()
+            logging.info(f"Successfully saved {len(prepared_data)} records to {table_name}")
     
     except Exception as e:
         db_session.rollback()
