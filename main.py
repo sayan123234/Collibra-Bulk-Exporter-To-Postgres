@@ -193,17 +193,18 @@ def create_table_if_not_exists(db_session, table_name, columns):
         # Construct CREATE TABLE statement
         columns_def = []
         
-        # Always add uuid and last_modified_on columns
+        # Always add uuid and timestamp columns
         columns_def.append("uuid VARCHAR PRIMARY KEY")
         columns_def.append("last_modified_on TIMESTAMP")
+        columns_def.append("created_on TIMESTAMP")
         
         # Add dynamic columns
         for col_name, col_type in columns.items():
             # Sanitize column name
             safe_col_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in col_name.lower().replace(' ', '_'))
             
-            # Default to VARCHAR for string columns
-            col_sql_type = "VARCHAR"
+            # Use TIMESTAMP for date columns, VARCHAR for others
+            col_sql_type = "TIMESTAMP" if "created_on" in safe_col_name else "VARCHAR"
             
             # Add column definition
             columns_def.append(f"{safe_col_name} {col_sql_type} NULL")
@@ -366,13 +367,16 @@ def flatten_json(asset, asset_type_name):
     """
     flattened = {
         f"UUID of Asset": asset['id'],
-        f"Asset last Modified On": asset['modifiedOn'],
         f"{asset_type_name} Full Name": asset.get('fullName'),
         f"{asset_type_name} Name": asset.get('displayName'),
         "Asset Type": asset.get('type', {}).get('name'),
         "Status": asset.get('status', {}).get('name'),
         f"Domain of {asset_type_name}": asset.get('domain', {}).get('name'),
         f"Community of {asset_type_name}": asset.get('domain', {}).get('parent', {}).get('name') if asset.get('domain', {}).get('parent') else None,
+        f"{asset_type_name} modified on": asset['modifiedOn'],
+        f"{asset_type_name} last modified By": asset.get('modifiedBy', {}).get('fullName'),
+        f"{asset_type_name} created on": asset['createdOn'],
+        f"{asset_type_name} created By": asset.get('createdBy', {}).get('fullName'),
     }
 
     # Process responsibilities

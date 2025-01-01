@@ -9,6 +9,13 @@ def get_query(asset_type_id, paginate):
             fullName
             displayName
             modifiedOn
+            modifiedBy{{ 
+            fullName
+            }}
+            createdOn
+            createdBy{{
+            fullName
+            }}
             status{{
                 name
             }}
