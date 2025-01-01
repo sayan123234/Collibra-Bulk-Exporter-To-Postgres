@@ -82,18 +82,15 @@ def is_empty(value):
     return False
 
 def safe_convert_to_str(value):
-    """
-    Safely convert value to string, handling None and empty cases
-    """
-    if is_empty(value):
+    if value is None:
         return None
-    
-    if isinstance(value, list):
-        # For lists, join non-empty values
-        non_empty_values = [str(v).strip() for v in value if not is_empty(v)]
-        return ', '.join(non_empty_values) if non_empty_values else None
-    
-    return str(value).strip() if not is_empty(value) else None
+    try:
+        if isinstance(value, (list, tuple)):
+            return ', '.join(str(v).encode('utf-8', 'replace').decode('utf-8') for v in value if v is not None)
+        return str(value).encode('utf-8', 'replace').decode('utf-8')
+    except Exception as e:
+        logging.error(f"Error converting value {value} to string: {e}")
+        return None
 
 def create_table_dynamically(asset_type_name, data):
     """
@@ -182,31 +179,38 @@ def create_table_dynamically(asset_type_name, data):
     return table_name
 
 def create_table_if_not_exists(db_session, table_name, columns):
-    """
-    Dynamically create a table if it doesn't exist with proper timestamp handling
-    """
     try:
-        # Construct CREATE TABLE statement
         columns_def = []
-        
-        # Add UUID as the only primary key
         columns_def.append("uuid VARCHAR PRIMARY KEY")
         
-        # Add timestamp columns with proper null handling
         timestamp_columns = [
-            "last_modified_on",
-            "created_on"
+            "modified_on",
+            "created_on",
+            f"{table_name}_modified_on",
+            f"{table_name}_created_on"
+        ]
+        
+        text_columns = [
+            f"{table_name}_modified_by",
+            f"{table_name}_created_by",
+            "last_modified_by"
         ]
         
         for col in timestamp_columns:
             columns_def.append(f"{col} TIMESTAMP NULL")
+            
+        for col in text_columns:
+            columns_def.append(f"{col} TEXT NULL")
         
-        # Add dynamic columns with proper null handling
-        for col_name, col_type in columns.items():
-            safe_col_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in col_name.lower().replace(' ', '_'))
-            col_sql_type = "TIMESTAMP" if any(time_word in safe_col_name for time_word in ['created_on', 'modified_on']) else "VARCHAR"
-            columns_def.append(f"{safe_col_name} {col_sql_type} NULL")
-        
+        for col_name, _ in columns.items():
+            safe_col_name = ''.join(c if c.isalnum() or c == '_' else '_' 
+                                  for c in col_name.lower().replace(' ', '_')).encode('utf-8', 'replace').decode('utf-8')
+            
+            if safe_col_name in timestamp_columns or safe_col_name in text_columns:
+                continue
+                
+            columns_def.append(f"{safe_col_name} TEXT NULL")
+
         create_table_sql = text(f"""
             CREATE TABLE IF NOT EXISTS {table_name} (
                 {', '.join(columns_def)}
@@ -222,32 +226,27 @@ def create_table_if_not_exists(db_session, table_name, columns):
         raise
 
 def save_to_postgres(asset_type_name, data):
-    """
-    Save data to PostgreSQL with enhanced null handling
-    """
     if not data:
-        logging.warning(f"No data to save for {asset_type_name}")
         return
 
-    table_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in f"collibra_{asset_type_name.lower().replace(' ', '_')}")
+    table_name = ''.join(c if c.isalnum() or c == '_' else '_' 
+                        for c in f"collibra_{asset_type_name.lower().replace(' ', '_')}").encode('utf-8', 'replace').decode('utf-8')
     
     db_session = SessionLocal()
     
     try:
-        # Get base columns excluding primary key and timestamps
-        base_columns = set(data[0].keys()) - {'UUID of Asset', 'Asset last Modified On'}
-        columns_dict = {col: 'VARCHAR' for col in base_columns}
+        base_columns = set(data[0].keys()) - {'UUID of Asset'}
+        columns_dict = {col: 'TEXT' for col in base_columns}
         
         create_table_if_not_exists(db_session, table_name, columns_dict)
         
-        # Sanitize column names
         sanitized_columns = {
-            key: ''.join(c if c.isalnum() or c == '_' else '_' for c in key.lower().replace(' ', '_'))
+            key: ''.join(c if c.isalnum() or c == '_' else '_' 
+                        for c in key.lower().replace(' ', '_')).encode('utf-8', 'replace').decode('utf-8')
             for key in base_columns
         }
 
-        # Construct upsert with proper handling of timestamps
-        columns_list = ['uuid', 'last_modified_on'] + list(sanitized_columns.values())
+        columns_list = ['uuid'] + list(sanitized_columns.values())
         placeholders = ', '.join([f':{col}' for col in columns_list])
         update_columns = ', '.join([f'{col} = EXCLUDED.{col}' for col in columns_list[1:]])
         
@@ -258,29 +257,27 @@ def save_to_postgres(asset_type_name, data):
                 {update_columns}
         """)
         
-        # Prepare data with enhanced null handling
         prepared_data = []
         for row in data:
             if not row.get('UUID of Asset'):
-                logging.warning(f"Skipping row without UUID: {row}")
                 continue
                 
-            prepared_row = {
-                'uuid': safe_convert_to_str(row['UUID of Asset']),
-                'last_modified_on': safe_convert_to_str(row['Asset last Modified On'])
-            }
+            prepared_row = {'uuid': safe_convert_to_str(row['UUID of Asset'])}
             
             for original_key in base_columns:
                 column_name = sanitized_columns[original_key]
                 value = row.get(original_key)
-                prepared_row[column_name] = safe_convert_to_str(value)
+                
+                if any(time_word in column_name for time_word in ['modified_on', 'created_on']):
+                    prepared_row[column_name] = value
+                else:
+                    prepared_row[column_name] = safe_convert_to_str(value)
             
             prepared_data.append(prepared_row)
         
         if prepared_data:
             db_session.execute(upsert_stmt, prepared_data)
             db_session.commit()
-            logging.info(f"Saved {len(prepared_data)} records for {asset_type_name}")
     
     except Exception as e:
         db_session.rollback()
