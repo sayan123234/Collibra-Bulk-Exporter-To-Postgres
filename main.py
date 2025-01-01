@@ -1,3 +1,4 @@
+# Standard library imports
 import os
 import json
 import time
@@ -7,6 +8,7 @@ import codecs
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 
+# Third-party imports
 import requests
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, String, DateTime, MetaData, Table, inspect
@@ -14,28 +16,47 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.sql import text
 from sqlalchemy.exc import SQLAlchemyError
 
+# Local imports
 from graphql_query import get_query
 from get_assetType_name import get_asset_type_name
 from OauthAuth import oauth_bearer_token
 from get_asset_type import get_available_asset_type
 
-# Set console encoding to UTF-8
+# Configure logging with both file and console handlers
+def setup_logging():
+    """Configure logging with both file and console handlers with proper formatting"""
+    log_format = '%(asctime)s - %(levelname)s - %(message)s'
+    date_format = '%Y-%m-%d %H:%M:%S'
+    
+    # Create logs directory if it doesn't exist
+    os.makedirs('logs', exist_ok=True)
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format=log_format,
+        datefmt=date_format,
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(f'logs/app_{time.strftime("%Y%m%d_%H%M%S")}.log', encoding='utf-8'),
+            logging.FileHandler('logs/latest.log', encoding='utf-8', mode='w')
+        ]
+    )
+    
+    # Add debug file handler
+    debug_handler = logging.FileHandler('logs/debug.log', encoding='utf-8')
+    debug_handler.setLevel(logging.DEBUG)
+    debug_handler.setFormatter(logging.Formatter(log_format, date_format))
+    logging.getLogger().addHandler(debug_handler)
+
+# Initialize logging
+setup_logging()
+
+# Set console encoding to UTF-8 for Windows
 if sys.platform == 'win32':
-    # For Windows, force UTF-8 encoding
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, errors='replace')
     sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, errors='replace')
-    # Set console code page to UTF-8
-    os.system('chcp 65001')
-
-# Setup logging with encoding specification
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('app.log', encoding='utf-8')
-    ]
-)
+    os.system('chcp 65001')  # Set console to UTF-8
+    logging.debug("Windows console encoding set to UTF-8")
 
 # Load environment variables
 load_dotenv()
@@ -53,20 +74,28 @@ metadata = MetaData()
 with open('Collibra_Asset_Type_Id_Manager.json', 'r', encoding='utf-8') as file:
     data = json.load(file)
 
-# For logging:
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('app.log', encoding='utf-8', errors='replace')
-    ]
-)
-
 ASSET_TYPE_IDS = data['ids']
 
 session = requests.Session()
 session.headers.update({'Authorization': f'Bearer {oauth_bearer_token()}'})
+
+class PerformanceLogger:
+    """Context manager for logging execution time of code blocks"""
+    def __init__(self, operation_name):
+        self.operation_name = operation_name
+        self.start_time = None
+
+    def __enter__(self):
+        self.start_time = time.time()
+        logging.debug(f"Starting {self.operation_name}")
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        duration = time.time() - self.start_time
+        if exc_type:
+            logging.error(f"{self.operation_name} failed after {duration:.2f} seconds")
+        else:
+            logging.debug(f"{self.operation_name} completed in {duration:.2f} seconds")
 
 def is_empty(value):
     """
@@ -213,77 +242,89 @@ def create_table_if_not_exists(db_session, table_name, columns):
         raise
 
 def save_to_postgres(asset_type_name, data):
+    """
+    Save flattened asset data to PostgreSQL database
+    
+    Args:
+        asset_type_name (str): Name of the asset type
+        data (list): List of flattened asset dictionaries
+        
+    Raises:
+        SQLAlchemyError: If database operations fail
+    """
     if not data:
+        logging.warning(f"No data to save for {asset_type_name}")
         return
 
-    # Ensure asset_type_name is not None before sanitizing
-    safe_asset_type_name = sanitize_identifier(asset_type_name or 'unknown_asset_type')
-    table_name = f"collibra_{safe_asset_type_name}"
-    
-    db_session = SessionLocal()
-    
-    try:
-        # Get columns from the flattened data
-        base_columns = set(data[0].keys())
-        columns_dict = {col: 'TEXT' for col in base_columns}
+    with PerformanceLogger(f"save_to_postgres_{asset_type_name}"):
+        # Ensure asset_type_name is not None before sanitizing
+        safe_asset_type_name = sanitize_identifier(asset_type_name or 'unknown_asset_type')
+        table_name = f"collibra_{safe_asset_type_name}"
         
-        # Special handling for UUID column
-        columns_dict['UUID of Asset'] = 'TEXT'  # Ensure UUID column exists
+        db_session = SessionLocal()
         
-        create_table_if_not_exists(db_session, table_name, columns_dict)
-        
-        # Create sanitized column mapping with special handling for UUID
-        sanitized_columns = {}
-        for key in base_columns:
-            if key == 'UUID of Asset':
-                sanitized_columns[key] = 'uuid'  # Map 'UUID of Asset' to 'uuid'
-            else:
-                safe_name = sanitize_identifier(key)
-                if safe_name:  # Only add if we got a valid name back
-                    sanitized_columns[key] = safe_name
-
-        # Prepare the insert statement
-        columns_list = list(sanitized_columns.values())
-        placeholders = ', '.join([f':{col}' for col in columns_list])
-        update_columns = ', '.join([f'{col} = EXCLUDED.{col}' for col in columns_list if col != 'uuid'])
-        
-        upsert_stmt = text(f"""
-            INSERT INTO {table_name} ({', '.join(columns_list)})
-            VALUES ({placeholders})
-            ON CONFLICT (uuid) DO UPDATE SET
-                {update_columns}
-        """)
-        
-        # Prepare the data with consistent UUID handling
-        prepared_data = []
-        for row in data:
-            if not row.get('UUID of Asset'):
-                continue
-                
-            prepared_row = {}
-            for original_key in base_columns:
-                column_name = sanitized_columns[original_key]
-                value = row.get(original_key)
-                
-                if 'modified_on' in column_name.lower() or 'created_on' in column_name.lower():
-                    prepared_row[column_name] = value
-                else:
-                    prepared_row[column_name] = safe_convert_to_str(value)
+        try:
+            # Get columns from the flattened data
+            base_columns = set(data[0].keys())
+            columns_dict = {col: 'TEXT' for col in base_columns}
             
-            prepared_data.append(prepared_row)
+            # Special handling for UUID column
+            columns_dict['UUID of Asset'] = 'TEXT'  # Ensure UUID column exists
+            
+            create_table_if_not_exists(db_session, table_name, columns_dict)
+            
+            # Create sanitized column mapping with special handling for UUID
+            sanitized_columns = {}
+            for key in base_columns:
+                if key == 'UUID of Asset':
+                    sanitized_columns[key] = 'uuid'  # Map 'UUID of Asset' to 'uuid'
+                else:
+                    safe_name = sanitize_identifier(key)
+                    if safe_name:  # Only add if we got a valid name back
+                        sanitized_columns[key] = safe_name
+
+            # Prepare the insert statement
+            columns_list = list(sanitized_columns.values())
+            placeholders = ', '.join([f':{col}' for col in columns_list])
+            update_columns = ', '.join([f'{col} = EXCLUDED.{col}' for col in columns_list if col != 'uuid'])
+            
+            upsert_stmt = text(f"""
+                INSERT INTO {table_name} ({', '.join(columns_list)})
+                VALUES ({placeholders})
+                ON CONFLICT (uuid) DO UPDATE SET
+                    {update_columns}
+            """)
+            
+            # Prepare the data with consistent UUID handling
+            prepared_data = []
+            for row in data:
+                if not row.get('UUID of Asset'):
+                    continue
+                    
+                prepared_row = {}
+                for original_key in base_columns:
+                    column_name = sanitized_columns[original_key]
+                    value = row.get(original_key)
+                    
+                    if 'modified_on' in column_name.lower() or 'created_on' in column_name.lower():
+                        prepared_row[column_name] = value
+                    else:
+                        prepared_row[column_name] = safe_convert_to_str(value)
+                
+                prepared_data.append(prepared_row)
+            
+            if prepared_data:
+                db_session.execute(upsert_stmt, prepared_data)
+                db_session.commit()
+                logging.info(f"Successfully saved {len(prepared_data)} records to {table_name}")
         
-        if prepared_data:
-            db_session.execute(upsert_stmt, prepared_data)
-            db_session.commit()
-            logging.info(f"Successfully saved {len(prepared_data)} records to {table_name}")
-    
-    except Exception as e:
-        db_session.rollback()
-        logging.error(f"Error saving data for {asset_type_name}: {e}")
-        raise
-    
-    finally:
-        db_session.close()
+        except Exception as e:
+            db_session.rollback()
+            logging.error(f"Error saving data for {asset_type_name}: {e}")
+            raise
+        
+        finally:
+            db_session.close()
 
 def fetch_data(asset_type_id, paginate, limit):
     try:
@@ -306,32 +347,46 @@ def fetch_data(asset_type_id, paginate, limit):
         return None
 
 def process_data(asset_type_id, limit=94):
-    all_assets = []
-    paginate = None
+    """
+    Process asset data in batches with pagination
+    
+    Args:
+        asset_type_id (str): ID of the asset type to process
+        limit (int): Batch size for pagination
+        
+    Returns:
+        list: List of processed assets
+    """
+    with PerformanceLogger(f"process_data_{asset_type_id}"):
+        all_assets = []
+        paginate = None
+        batch_count = 0
 
-    while True:
-        object_response = fetch_data(asset_type_id, paginate, limit)
+        while True:
+            batch_count += 1
+            logging.debug(f"Processing batch {batch_count} for asset type {asset_type_id}")
+            object_response = fetch_data(asset_type_id, paginate, limit)
 
-        if object_response and 'data' in object_response and 'assets' in object_response['data']:
-            assets = object_response['data']['assets']
+            if object_response and 'data' in object_response and 'assets' in object_response['data']:
+                assets = object_response['data']['assets']
 
-            if not assets:
-                logging.info("No more assets to fetch.")
+                if not assets:
+                    logging.info("No more assets to fetch.")
+                    break
+
+                paginate = assets[-1]['id']
+
+                logging.info(f"Fetched {len(assets)} assets")
+                all_assets.extend(assets)
+            else:
+                logging.warning('No assets found or there was an error fetching data.')
                 break
 
-            paginate = assets[-1]['id']
+        if not all_assets:
+            logging.warning("No data was fetched.")
 
-            logging.info(f"Fetched {len(assets)} assets")
-            all_assets.extend(assets)
-        else:
-            logging.warning('No assets found or there was an error fetching data.')
-            break
-
-    if not all_assets:
-        logging.warning("No data was fetched.")
-
-    logging.info(f"Total assets fetched: {len(all_assets)}")
-    return all_assets
+        logging.info(f"Total assets fetched: {len(all_assets)}")
+        return all_assets
 
 def flatten_json(asset, asset_type_name):
     """
@@ -459,21 +514,47 @@ def process_asset_type(asset_type_id):
         return 0
 
 def main():
-    total_start_time = time.time()
-    
-    total_elapsed_time = 0
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        future_to_asset = {executor.submit(process_asset_type, asset_type_id): asset_type_id for asset_type_id in ASSET_TYPE_IDS}
-        for future in as_completed(future_to_asset):
-            elapsed_time = future.result()
-            if elapsed_time:
-                total_elapsed_time += elapsed_time
-    
-    total_end_time = time.time()
-    total_program_time = total_end_time - total_start_time
-    
-    logging.info(f"\nTotal time taken to process all asset types: {total_elapsed_time:.2f} seconds")
-    logging.info(f"Total program execution time: {total_program_time:.2f} seconds")
+    """
+    Main execution function with improved error handling and logging
+    """
+    with PerformanceLogger("main_execution"):
+        try:
+            total_start_time = time.time()
+            success_count = 0
+            error_count = 0
+            
+            logging.info("Starting Collibra Bulk Export process")
+            logging.info(f"Processing {len(ASSET_TYPE_IDS)} asset types")
+            
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_asset = {
+                    executor.submit(process_asset_type, asset_type_id): asset_type_id 
+                    for asset_type_id in ASSET_TYPE_IDS
+                }
+                
+                for future in as_completed(future_to_asset):
+                    asset_type_id = future_to_asset[future]
+                    try:
+                        elapsed_time = future.result()
+                        if elapsed_time:
+                            success_count += 1
+                    except Exception as e:
+                        error_count += 1
+                        logging.error(f"Error processing asset type {asset_type_id}: {str(e)}")
+            
+            total_time = time.time() - total_start_time
+            logging.info(f"""
+Export Summary:
+--------------
+Total asset types: {len(ASSET_TYPE_IDS)}
+Successful: {success_count}
+Failed: {error_count}
+Total time: {total_time:.2f} seconds
+            """)
+            
+        except Exception as e:
+            logging.critical(f"Critical error in main execution: {str(e)}")
+            raise
 
 if __name__ == "__main__":
     main()
