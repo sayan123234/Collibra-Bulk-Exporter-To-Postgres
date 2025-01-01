@@ -95,8 +95,10 @@ def safe_convert_to_str(value):
 
 def sanitize_identifier(name):
     """Sanitize table/column names"""
+    if name is None:
+        return 'unnamed'
     return ''.join(c if c.isalnum() or c == '_' else '_' 
-                  for c in name.lower().replace(' ', '_')).encode('ascii', 'ignore').decode('ascii')
+                  for c in str(name).lower().replace(' ', '_')).encode('ascii', 'ignore').decode('ascii')
 
 def create_table_dynamically(asset_type_name, data):
     """
@@ -120,7 +122,7 @@ def create_table_dynamically(asset_type_name, data):
     if data:
         first_row = data[0]
         for key, value in first_row.items():
-            if key not in ['UUID of Asset', 'Asset last Modified On']:
+            if key != 'UUID of Asset':  # Remove check for 'Asset last Modified On'
                 # Sanitize column names
                 column_name = ''.join(c if c.isalnum() or c == '_' else '_' for c in key.lower().replace(' ', '_'))
                 columns[column_name] = Column(
@@ -191,7 +193,7 @@ def create_table_if_not_exists(db_session, table_name, columns):
         columns_def.append("uuid VARCHAR PRIMARY KEY")
         
         for col_name, _ in columns.items():
-            if col_name != 'UUID of Asset':  # Skip UUID as it's already added
+            if col_name != 'UUID of Asset':  # Only skip UUID column
                 safe_col_name = ''.join(c if c.isalnum() or c == '_' else '_' 
                                       for c in col_name.lower().replace(' ', '_')).encode('utf-8', 'replace').decode('utf-8')
                 columns_def.append(f"{safe_col_name} TEXT NULL")
@@ -214,8 +216,9 @@ def save_to_postgres(asset_type_name, data):
     if not data:
         return
 
-    table_name = ''.join(c if c.isalnum() or c == '_' else '_' 
-                        for c in f"collibra_{asset_type_name.lower().replace(' ', '_')}").encode('utf-8', 'replace').decode('utf-8')
+    # Ensure asset_type_name is not None before sanitizing
+    safe_asset_type_name = sanitize_identifier(asset_type_name or 'unknown_asset_type')
+    table_name = f"collibra_{safe_asset_type_name}"
     
     db_session = SessionLocal()
     
@@ -224,14 +227,20 @@ def save_to_postgres(asset_type_name, data):
         base_columns = set(data[0].keys())
         columns_dict = {col: 'TEXT' for col in base_columns}
         
+        # Special handling for UUID column
+        columns_dict['UUID of Asset'] = 'TEXT'  # Ensure UUID column exists
+        
         create_table_if_not_exists(db_session, table_name, columns_dict)
         
-        # Create sanitized column mapping
-        sanitized_columns = {
-            key: ''.join(c if c.isalnum() or c == '_' else '_' 
-                        for c in key.lower().replace(' ', '_')).encode('utf-8', 'replace').decode('utf-8')
-            for key in base_columns
-        }
+        # Create sanitized column mapping with special handling for UUID
+        sanitized_columns = {}
+        for key in base_columns:
+            if key == 'UUID of Asset':
+                sanitized_columns[key] = 'uuid'  # Map 'UUID of Asset' to 'uuid'
+            else:
+                safe_name = sanitize_identifier(key)
+                if safe_name:  # Only add if we got a valid name back
+                    sanitized_columns[key] = safe_name
 
         # Prepare the insert statement
         columns_list = list(sanitized_columns.values())
@@ -245,7 +254,7 @@ def save_to_postgres(asset_type_name, data):
                 {update_columns}
         """)
         
-        # Prepare the data
+        # Prepare the data with consistent UUID handling
         prepared_data = []
         for row in data:
             if not row.get('UUID of Asset'):
@@ -275,7 +284,7 @@ def save_to_postgres(asset_type_name, data):
     
     finally:
         db_session.close()
-        
+
 def fetch_data(asset_type_id, paginate, limit):
     try:
         query = get_query(asset_type_id, f'"{paginate}"' if paginate else 'null')
@@ -330,14 +339,13 @@ def flatten_json(asset, asset_type_name):
     """
     flattened = {
         "UUID of Asset": asset.get('id'),
-        f"Asset last Modified On": asset.get('modifiedOn'),
         f"{asset_type_name} Full Name": asset.get('fullName'),
         f"{asset_type_name} Name": asset.get('displayName'),
         "Asset Type": asset.get('type', {}).get('name'),
         "Status": asset.get('status', {}).get('name'),
         f"Domain of {asset_type_name}": asset.get('domain', {}).get('name'),
         f"Community of {asset_type_name}": asset.get('domain', {}).get('parent', {}).get('name'),
-        f"{asset_type_name} modified on": asset.get('modifiedOn'),
+        f"{asset_type_name} modified on": asset.get('modifiedOn'),  # This is the only modified_on we keep
         f"{asset_type_name} last modified By": asset.get('modifiedBy', {}).get('fullName'),
         f"{asset_type_name} created on": asset.get('createdOn'),
         f"{asset_type_name} created By": asset.get('createdBy', {}).get('fullName'),
