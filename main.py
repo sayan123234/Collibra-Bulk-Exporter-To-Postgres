@@ -190,9 +190,9 @@ def create_table_if_not_exists(db_session, table_name, columns):
         columns_def = []
         columns_def.append("uuid VARCHAR PRIMARY KEY")
         
+        # Define timestamp columns - removed standalone created_on
         timestamp_columns = [
             "modified_on",
-            "created_on",
             f"{table_name}_modified_on",
             f"{table_name}_created_on"
         ]
@@ -210,8 +210,7 @@ def create_table_if_not_exists(db_session, table_name, columns):
             columns_def.append(f"{col} TEXT NULL")
         
         for col_name, _ in columns.items():
-            safe_col_name = ''.join(c if c.isalnum() or c == '_' else '_' 
-                                  for c in col_name.lower().replace(' ', '_')).encode('utf-8', 'replace').decode('utf-8')
+            safe_col_name = sanitize_identifier(col_name)
             
             if safe_col_name in timestamp_columns or safe_col_name in text_columns:
                 continue
@@ -236,9 +235,7 @@ def save_to_postgres(asset_type_name, data):
     if not data:
         return
 
-    table_name = ''.join(c if c.isalnum() or c == '_' else '_' 
-                        for c in f"collibra_{asset_type_name.lower().replace(' ', '_')}").encode('utf-8', 'replace').decode('utf-8')
-    
+    table_name = sanitize_identifier(f"collibra_{asset_type_name.lower()}")
     db_session = SessionLocal()
     
     try:
@@ -248,8 +245,7 @@ def save_to_postgres(asset_type_name, data):
         create_table_if_not_exists(db_session, table_name, columns_dict)
         
         sanitized_columns = {
-            key: ''.join(c if c.isalnum() or c == '_' else '_' 
-                        for c in key.lower().replace(' ', '_')).encode('utf-8', 'replace').decode('utf-8')
+            key: sanitize_identifier(key)
             for key in base_columns
         }
 
