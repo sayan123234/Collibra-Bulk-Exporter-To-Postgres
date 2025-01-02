@@ -123,11 +123,29 @@ def safe_convert_to_str(value):
         return None
 
 def sanitize_identifier(name):
-    """Sanitize table/column names"""
+    """Sanitize table/column names more reliably"""
     if name is None:
         return 'unnamed'
-    return ''.join(c if c.isalnum() or c == '_' else '_' 
-                  for c in str(name).lower().replace(' ', '_')).encode('ascii', 'ignore').decode('ascii')
+    
+    # Replace common problematic characters
+    sanitized = name.lower()
+    sanitized = ''.join(c if c.isalnum() or c == '_' else '_' for c in sanitized)
+    
+    # Ensure it starts with a letter or underscore
+    if sanitized[0].isdigit():
+        sanitized = f"_{sanitized}"
+    
+    # Remove consecutive underscores and trim length
+    while '__' in sanitized:
+        sanitized = sanitized.replace('__', '_')
+    
+    # Trim to PostgreSQL's maximum identifier length (63 characters)
+    sanitized = sanitized[:63]
+    
+    # Remove trailing underscores
+    sanitized = sanitized.rstrip('_')
+    
+    return sanitized
 
 def create_table_dynamically(asset_type_name, data):
     """
@@ -217,14 +235,16 @@ def create_table_dynamically(asset_type_name, data):
 
 def create_table_if_not_exists(db_session, table_name, columns):
     try:
-        # Simplify to just create columns based on the flattened data
+        # Log the columns that will be created
+        logging.info(f"Creating table {table_name} with columns: {list(columns.keys())}")
+        
         columns_def = []
         columns_def.append("uuid VARCHAR PRIMARY KEY")
         
         for col_name, _ in columns.items():
-            if col_name != 'UUID of Asset':  # Only skip UUID column
-                safe_col_name = ''.join(c if c.isalnum() or c == '_' else '_' 
-                                      for c in col_name.lower().replace(' ', '_')).encode('utf-8', 'replace').decode('utf-8')
+            if col_name != 'UUID of Asset':
+                safe_col_name = sanitize_identifier(col_name)
+                logging.debug(f"Creating column: {safe_col_name} (original: {col_name})")
                 columns_def.append(f"{safe_col_name} TEXT NULL")
 
         create_table_sql = text(f"""
@@ -233,8 +253,14 @@ def create_table_if_not_exists(db_session, table_name, columns):
             )
         """)
         
+        # Execute table creation
         db_session.execute(create_table_sql)
         db_session.commit()
+        
+        # Verify created columns
+        inspector = inspect(engine)
+        actual_columns = [col['name'] for col in inspector.get_columns(table_name)]
+        logging.info(f"Actual columns in table: {actual_columns}")
         
     except Exception as e:
         db_session.rollback()
@@ -264,24 +290,32 @@ def save_to_postgres(asset_type_name, data):
         db_session = SessionLocal()
         
         try:
+            # Log the incoming data structure
+            if data:
+                logging.info(f"Sample data keys: {list(data[0].keys())}")
+            
             # Get columns from the flattened data
-            base_columns = set(data[0].keys())
+            base_columns = set()
+            for row in data:
+                base_columns.update(row.keys())
+            
+            logging.info(f"Total unique columns found: {len(base_columns)}")
             columns_dict = {col: 'TEXT' for col in base_columns}
             
-            # Special handling for UUID column
-            columns_dict['UUID of Asset'] = 'TEXT'  # Ensure UUID column exists
-            
+            # Create table with all columns
             create_table_if_not_exists(db_session, table_name, columns_dict)
             
-            # Create sanitized column mapping with special handling for UUID
+            # Create sanitized column mapping
             sanitized_columns = {}
             for key in base_columns:
+                safe_name = sanitize_identifier(key)
                 if key == 'UUID of Asset':
-                    sanitized_columns[key] = 'uuid'  # Map 'UUID of Asset' to 'uuid'
-                else:
-                    safe_name = sanitize_identifier(key)
-                    if safe_name:  # Only add if we got a valid name back
-                        sanitized_columns[key] = safe_name
+                    safe_name = 'uuid'
+                sanitized_columns[key] = safe_name
+                logging.debug(f"Column mapping: {key} -> {safe_name}")
+
+            # Log the final column mapping
+            logging.info(f"Final column mapping: {sanitized_columns}")
 
             # Prepare the insert statement
             columns_list = list(sanitized_columns.values())
@@ -303,17 +337,19 @@ def save_to_postgres(asset_type_name, data):
                     
                 prepared_row = {}
                 for original_key in base_columns:
+                    if original_key not in sanitized_columns:
+                        logging.warning(f"Missing column mapping for: {original_key}")
+                        continue
+                        
                     column_name = sanitized_columns[original_key]
                     value = row.get(original_key)
-                    
-                    if 'modified_on' in column_name.lower() or 'created_on' in column_name.lower():
-                        prepared_row[column_name] = value
-                    else:
-                        prepared_row[column_name] = safe_convert_to_str(value)
+                    prepared_row[column_name] = safe_convert_to_str(value)
                 
                 prepared_data.append(prepared_row)
             
             if prepared_data:
+                # Log sample of prepared data
+                logging.debug(f"Sample prepared row: {prepared_data[0]}")
                 db_session.execute(upsert_stmt, prepared_data)
                 db_session.commit()
                 logging.info(f"Successfully saved {len(prepared_data)} records to {table_name}")
