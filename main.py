@@ -220,12 +220,18 @@ def safe_convert_to_str(value):
 
 def create_table_if_not_exists(db_session, table_name, columns):
     try:
+        logging.info(f"Creating/verifying table {table_name}")
+        logging.debug(f"Requested columns: {list(columns.keys())}")
+        
         columns_def = ["uuid VARCHAR PRIMARY KEY"]
+        column_mapping = {}
         
         for col_name, _ in columns.items():
             if col_name != 'UUID of Asset':
                 safe_col_name = sanitize_identifier(col_name)
                 columns_def.append(f"{safe_col_name} TEXT NULL")
+                column_mapping[col_name] = safe_col_name
+                logging.debug(f"Mapping column: {col_name} -> {safe_col_name}")
 
         create_table_sql = text(f"""
             CREATE TABLE IF NOT EXISTS {table_name} (
@@ -236,9 +242,18 @@ def create_table_if_not_exists(db_session, table_name, columns):
         db_session.execute(create_table_sql)
         db_session.commit()
         
+        # Verify created columns
         inspector = inspect(engine)
-        actual_columns = [col['name'] for col in inspector.get_columns(table_name)]
-        logging.info(f"Table columns: {actual_columns}")
+        actual_columns = {col['name'] for col in inspector.get_columns(table_name)}
+        expected_columns = {sanitize_identifier(col) for col in columns.keys()}
+        expected_columns.add('uuid')
+        
+        missing_columns = expected_columns - actual_columns
+        if missing_columns:
+            logging.error(f"Missing columns in table: {missing_columns}")
+            
+        logging.info(f"Table {table_name} verified. Actual columns: {actual_columns}")
+        return column_mapping
         
     except Exception as e:
         db_session.rollback()

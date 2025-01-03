@@ -40,7 +40,7 @@ def get_string_attributes_query(asset_type_id, paginate, limit):
             limit: $limit
         ) {{
             id
-            stringAttributes(limit: 50) {{
+            stringAttributes(limit: $limit) {{
                 type {{
                     name
                 }}
@@ -58,7 +58,7 @@ def get_multi_value_attributes_query(asset_type_id, paginate, limit):
             limit: $limit
         ) {{
             id
-            multiValueAttributes(limit: 50) {{
+            multiValueAttributes(limit: $limit) {{
                 type {{
                     name
                 }}
@@ -76,7 +76,7 @@ def get_numeric_attributes_query(asset_type_id, paginate, limit):
             limit: $limit
         ) {{
             id
-            numericAttributes(limit: 50) {{
+            numericAttributes(limit: $limit) {{
                 type {{
                     name
                 }}
@@ -94,7 +94,7 @@ def get_boolean_attributes_query(asset_type_id, paginate, limit):
             limit: $limit
         ) {{
             id
-            booleanAttributes(limit: 50) {{
+            booleanAttributes(limit: $limit) {{
                 type {{
                     name
                 }}
@@ -112,7 +112,7 @@ def get_outgoing_relations_query(asset_type_id, paginate, limit):
             limit: $limit
         ) {{
             id
-            outgoingRelations(limit: 50) {{
+            outgoingRelations(limit: $limit) {{
                 target {{
                     id
                     fullName
@@ -137,7 +137,7 @@ def get_incoming_relations_query(asset_type_id, paginate, limit):
             limit: $limit
         ) {{
             id
-            incomingRelations(limit: 50) {{
+            incomingRelations(limit: $limit) {{
                 source {{
                     id
                     fullName
@@ -162,7 +162,7 @@ def get_responsibilities_query(asset_type_id, paginate, limit):
             limit: $limit
         ) {{
             id
-            responsibilities(limit: 50) {{
+            responsibilities(limit: $limit) {{
                 role {{
                     name
                 }}
