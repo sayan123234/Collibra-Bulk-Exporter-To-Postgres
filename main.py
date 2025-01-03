@@ -24,17 +24,25 @@ def setup_logging():
     
     os.makedirs('logs', exist_ok=True)
     
+    # Ensure UTF-8 encoding for all log files
+    file_handlers = [
+        logging.FileHandler(f'logs/app_{time.strftime("%Y%m%d_%H%M%S")}.log', encoding='utf-8'),
+        logging.FileHandler('logs/latest.log', encoding='utf-8', mode='w')
+    ]
+    
+    # Use a custom StreamHandler with UTF-8 encoding
+    stream_handler = logging.StreamHandler(codecs.getwriter('utf-8')(sys.stdout.buffer, 'replace'))
+    
+    handlers = file_handlers + [stream_handler]
+    
     logging.basicConfig(
         level=logging.INFO,
         format=log_format,
         datefmt=date_format,
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(f'logs/app_{time.strftime("%Y%m%d_%H%M%S")}.log', encoding='utf-8'),
-            logging.FileHandler('logs/latest.log', encoding='utf-8', mode='w')
-        ]
+        handlers=handlers
     )
     
+    # Add debug log with UTF-8 encoding
     debug_handler = logging.FileHandler('logs/debug.log', encoding='utf-8')
     debug_handler.setLevel(logging.DEBUG)
     debug_handler.setFormatter(logging.Formatter(log_format, date_format))
@@ -61,14 +69,14 @@ session = requests.Session()
 session.headers.update({'Authorization': f'Bearer {oauth_bearer_token()}'})
 
 QUERY_LIMITS = {
-    'main': 10000,
-    'string': 490,
-    'multi': 490,
-    'numeric': 490,
-    'boolean': 490,
-    'outgoing': 490,
-    'incoming': 490,
-    'responsibilities': 490
+    'main': 1000,
+    'string': 450,
+    'multi': 450,
+    'numeric': 450,
+    'boolean': 450,
+    'outgoing': 450,
+    'incoming': 450,
+    'responsibilities': 450
 }
 
 class PerformanceLogger:
@@ -198,8 +206,14 @@ def safe_convert_to_str(value):
         
     try:
         if isinstance(value, (list, tuple)):
-            return ', '.join(str(v) for v in value if v is not None)
-        return str(value)
+            # Handle lists with proper encoding
+            return ', '.join(
+                str(v).encode('utf-8', errors='replace').decode('utf-8')
+                for v in value 
+                if v is not None
+            )
+        # Handle single values with proper encoding
+        return str(value).encode('utf-8', errors='replace').decode('utf-8')
     except Exception as e:
         logging.error(f"Error converting value to string: {e}")
         return None
@@ -237,7 +251,11 @@ def save_to_postgres(asset_type_name, data):
         return
 
     with PerformanceLogger(f"save_to_postgres_{asset_type_name}"):
-        safe_asset_type_name = sanitize_identifier(asset_type_name or 'unknown_asset_type')
+        # Ensure asset_type_name is properly encoded
+        safe_asset_type_name = sanitize_identifier(
+            asset_type_name.encode('utf-8', errors='replace').decode('utf-8')
+            if asset_type_name else 'unknown_asset_type'
+        )
         table_name = f"collibra_{safe_asset_type_name}"
         
         db_session = SessionLocal()
@@ -288,81 +306,92 @@ def save_to_postgres(asset_type_name, data):
             db_session.close()
 
 def flatten_json(asset, asset_type_name):
-    flattened = {
-        "UUID of Asset": asset.get('id'),
-        f"{asset_type_name} Full Name": asset.get('fullName'),
-        f"{asset_type_name} Name": asset.get('displayName'),
-        "Asset Type": asset.get('type', {}).get('name'),
-        "Status": asset.get('status', {}).get('name'),
-        f"Domain of {asset_type_name}": asset.get('domain', {}).get('name'),
-        f"Community of {asset_type_name}": asset.get('domain', {}).get('parent', {}).get('name'),
-        f"{asset_type_name} modified on": asset.get('modifiedOn'),
-        f"{asset_type_name} last modified By": asset.get('modifiedBy', {}).get('fullName'),
-        f"{asset_type_name} created on": asset.get('createdOn'),
-        f"{asset_type_name} created By": asset.get('createdBy', {}).get('fullName'),
-    }
+    """
+    Flatten the JSON with proper text normalization
+    """
+    try:
+        flattened = {
+            "UUID of Asset": asset.get('id'),
+            f"{asset_type_name} Full Name": normalize_text(asset.get('fullName')),
+            f"{asset_type_name} Name": normalize_text(asset.get('displayName')),
+            "Asset Type": asset.get('type', {}).get('name'),
+            "Status": asset.get('status', {}).get('name'),
+            f"Domain of {asset_type_name}": asset.get('domain', {}).get('name'),
+            f"Community of {asset_type_name}": asset.get('domain', {}).get('parent', {}).get('name'),
+            f"{asset_type_name} modified on": asset.get('modifiedOn'),
+            f"{asset_type_name} last modified By": asset.get('modifiedBy', {}).get('fullName'),
+            f"{asset_type_name} created on": asset.get('createdOn'),
+            f"{asset_type_name} created By": asset.get('createdBy', {}).get('fullName'),
+        }
 
-    responsibilities = asset.get('responsibilities', [])
-    if responsibilities:
-        flattened.update({
-            f"User Role Against {asset_type_name}": ', '.join(filter(None, (r.get('role', {}).get('name') for r in responsibilities))),
-            f"User Name Against {asset_type_name}": ', '.join(filter(None, (r.get('user', {}).get('fullName') for r in responsibilities))),
-            f"User Email Against {asset_type_name}": ', '.join(filter(None, (r.get('user', {}).get('email') for r in responsibilities)))
-        })
+        responsibilities = asset.get('responsibilities', [])
+        if responsibilities:
+            flattened.update({
+                f"User Role Against {asset_type_name}": ', '.join(filter(None, (r.get('role', {}).get('name') for r in responsibilities))),
+                f"User Name Against {asset_type_name}": ', '.join(filter(None, (r.get('user', {}).get('fullName') for r in responsibilities))),
+                f"User Email Against {asset_type_name}": ', '.join(filter(None, (r.get('user', {}).get('email') for r in responsibilities)))
+            })
 
-    string_attrs = defaultdict(list)
-    for attr_type in ['multiValueAttributes', 'stringAttributes', 'numericAttributes', 'dateAttributes', 'booleanAttributes']:
-        for attr in asset.get(attr_type, []):
-            attr_name = attr.get('type', {}).get('name')
-            if not attr_name:
-                continue
+        string_attrs = defaultdict(list)
+        for attr_type in ['multiValueAttributes', 'stringAttributes', 'numericAttributes', 'dateAttributes', 'booleanAttributes']:
+            for attr in asset.get(attr_type, []):
+                attr_name = attr.get('type', {}).get('name')
+                if not attr_name:
+                    continue
 
-            if attr_type == 'multiValueAttributes':
-                values = [v.strip() for v in attr.get('stringValues', []) if v and v.strip()]
-                flattened[attr_name] = ', '.join(values) if values else None
-            elif attr_type == 'stringAttributes':
-                value = attr.get('stringValue', '').strip()
-                if value:
-                    string_attrs[attr_name].append(value)
-            else:
-                value_key = f"{attr_type[:-10]}Value"
-                flattened[attr_name] = attr.get(value_key)
+                if attr_type == 'multiValueAttributes':
+                    values = [v.strip() for v in attr.get('stringValues', []) if v and v.strip()]
+                    flattened[attr_name] = ', '.join(values) if values else None
+                elif attr_type == 'stringAttributes':
+                    value = attr.get('stringValue', '').strip()
+                    if value:
+                        string_attrs[attr_name].append(value)
+                else:
+                    value_key = f"{attr_type[:-10]}Value"
+                    flattened[attr_name] = attr.get(value_key)
 
-    for attr_name, values in string_attrs.items():
-        unique_values = list(dict.fromkeys(values))
-        flattened[attr_name] = ', '.join(unique_values) if unique_values else None
+        for attr_name, values in string_attrs.items():
+            unique_values = list(dict.fromkeys(values))
+            flattened[attr_name] = ', '.join(unique_values) if unique_values else None
 
-    relation_types = defaultdict(list)
-    relation_ids = defaultdict(list)
-    
-    for relation_direction in ['outgoingRelations', 'incomingRelations']:
-        for relation in asset.get(relation_direction, []):
-            target_or_source = 'target' if relation_direction == 'outgoingRelations' else 'source'
-            role_or_corole = 'role' if relation_direction == 'outgoingRelations' else 'corole'
-            
-            related_obj = relation.get(target_or_source, {})
-            role_type = relation.get('type', {}).get(role_or_corole, '')
-            
-            if relation_direction == 'outgoingRelations':
-                rel_type = f"{asset_type_name} {role_type} {related_obj.get('type', {}).get('name')}"
-            else:
-                rel_type = f"{related_obj.get('type', {}).get('name')} {role_type} {asset_type_name}"
-            
-            display_name = related_obj.get('displayName', '').strip()
-            asset_id = related_obj.get('id')
-            
-            if display_name:
-                relation_types[rel_type].append(display_name)
-                if asset_id:
-                    relation_ids[f"{rel_type} Asset IDs"].append(asset_id)
+        relation_types = defaultdict(list)
+        relation_ids = defaultdict(list)
+        
+        for relation_direction in ['outgoingRelations', 'incomingRelations']:
+            for relation in asset.get(relation_direction, []):
+                target_or_source = 'target' if relation_direction == 'outgoingRelations' else 'source'
+                role_or_corole = 'role' if relation_direction == 'outgoingRelations' else 'corole'
+                
+                related_obj = relation.get(target_or_source, {})
+                role_type = relation.get('type', {}).get(role_or_corole, '')
+                
+                if relation_direction == 'outgoingRelations':
+                    rel_type = f"{asset_type_name} {role_type} {related_obj.get('type', {}).get('name')}"
+                else:
+                    rel_type = f"{related_obj.get('type', {}).get('name')} {role_type} {asset_type_name}"
+                
+                display_name = related_obj.get('displayName', '').strip()
+                asset_id = related_obj.get('id')
+                
+                if display_name:
+                    relation_types[rel_type].append(display_name)
+                    if asset_id:
+                        relation_ids[f"{rel_type} Asset IDs"].append(asset_id)
 
-    for rel_type, values in relation_types.items():
-        flattened[rel_type] = ', '.join(values) if values else None
-        id_key = f"{rel_type} Asset IDs"
-        if id_key in relation_ids:
-            flattened[id_key] = ', '.join(relation_ids[id_key]) if relation_ids[id_key] else None
+        for rel_type, values in relation_types.items():
+            flattened[rel_type] = ', '.join(values) if values else None
+            id_key = f"{rel_type} Asset IDs"
+            if id_key in relation_ids:
+                flattened[id_key] = ', '.join(relation_ids[id_key]) if relation_ids[id_key] else None
 
-    return {k: v for k, v in flattened.items() if not is_empty(v)}
+        # Apply text normalization to all string values
+        return {k: normalize_text(v) if isinstance(v, str) else v 
+                for k, v in flattened.items() 
+                if not is_empty(v)}
+                
+    except Exception as e:
+        logging.error(f"Error flattening JSON: {e}")
+        return {"UUID of Asset": asset.get('id')}
 
 def process_asset_type(asset_type_id):
     """Process a single asset type with the new multi-query approach."""
@@ -423,6 +452,23 @@ Total time: {total_time:.2f} seconds
     except Exception as e:
         logging.critical(f"Critical error in main execution: {str(e)}")
         raise
+
+# Add new function to handle text normalization
+def normalize_text(text):
+    """Normalize text to handle special characters"""
+    if text is None:
+        return None
+    try:
+        # Handle various types of quotes and special characters
+        import unicodedata
+        # Normalize Unicode characters
+        normalized = unicodedata.normalize('NFKD', str(text))
+        # Remove non-ASCII characters but keep basic punctuation
+        ascii_text = normalized.encode('ascii', errors='replace').decode('ascii')
+        return ascii_text
+    except Exception as e:
+        logging.warning(f"Error normalizing text: {e}")
+        return str(text).encode('ascii', errors='replace').decode('ascii')
 
 if __name__ == "__main__":
     main()
