@@ -61,14 +61,14 @@ session = requests.Session()
 session.headers.update({'Authorization': f'Bearer {oauth_bearer_token()}'})
 
 QUERY_LIMITS = {
-    'main': 1000,
-    'string': 450,
-    'multi': 450,
-    'numeric': 450,
-    'boolean': 450,
-    'outgoing': 450,
-    'incoming': 450,
-    'responsibilities': 450
+    'main': 10000,
+    'string': 490,
+    'multi': 490,
+    'numeric': 490,
+    'boolean': 490,
+    'outgoing': 490,
+    'incoming': 490,
+    'responsibilities': 490
 }
 
 class PerformanceLogger:
