@@ -1,4 +1,4 @@
-def get_query(asset_type_id, paginate):
+def get_query(asset_type_id, paginate, nested_offset=0, nested_limit=50):
     return f"""
     query Assets($limit: Int!) {{
         assets(
@@ -10,11 +10,11 @@ def get_query(asset_type_id, paginate):
             displayName
             modifiedOn
             modifiedBy{{ 
-            fullName
+                fullName
             }}
             createdOn
             createdBy{{
-            fullName
+                fullName
             }}
             status{{
                 name
@@ -28,37 +28,37 @@ def get_query(asset_type_id, paginate):
                     name
                 }}
             }}
-            stringAttributes (limit: 50) {{
+            stringAttributes (offset: {nested_offset}, limit: {nested_limit}) {{
                 type {{
                     name
                 }}
                 stringValue
             }}
-            multiValueAttributes (limit: 50) {{
+            multiValueAttributes (offset: {nested_offset}, limit: {nested_limit}) {{
                 type {{
                     name
                 }}
                 stringValues
             }}
-            numericAttributes (limit: 50) {{
+            numericAttributes (offset: {nested_offset}, limit: {nested_limit}) {{
                 type {{
                     name
                 }}
                 numericValue
             }}
-            dateAttributes (limit: 50) {{
+            dateAttributes (offset: {nested_offset}, limit: {nested_limit}) {{
                 type {{
                     name
                 }}
                 dateValue
             }}
-            booleanAttributes (limit: 50) {{
+            booleanAttributes (offset: {nested_offset}, limit: {nested_limit}) {{
                 type {{
                     name
                 }}
                 booleanValue
             }}
-            outgoingRelations (limit: 50) {{
+            outgoingRelations (offset: {nested_offset}, limit: {nested_limit}) {{
                 target {{
                     id
                     fullName
@@ -71,7 +71,7 @@ def get_query(asset_type_id, paginate):
                     role
                 }}
             }}
-            incomingRelations (limit: 50) {{
+            incomingRelations (offset: {nested_offset}, limit: {nested_limit}) {{
                 source {{
                     id
                     fullName
@@ -80,11 +80,11 @@ def get_query(asset_type_id, paginate):
                         name
                     }}
                 }}
-                 type {{
+                type {{
                     corole
                 }}
             }}
-            responsibilities (limit: 50) {{
+            responsibilities (offset: {nested_offset}, limit: {nested_limit}) {{
                 role {{
                     name
                 }}

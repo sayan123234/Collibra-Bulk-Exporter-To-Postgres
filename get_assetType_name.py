@@ -2,7 +2,7 @@ import os
 import logging
 import requests
 from dotenv import load_dotenv
-from OauthAuth import oauth_bearer_token
+from OauthAuth import get_auth_header
 
 load_dotenv()
 
@@ -16,7 +16,7 @@ def get_asset_type_name(asset_type_id):
     url = f"https://{base_url}/rest/2.0/assetTypes/{asset_type_id}"
 
     try:
-        session.headers.update({'Authorization': f'Bearer {oauth_bearer_token()}'})
+        session.headers.update(get_auth_header())
         response = session.get(url)
         response.raise_for_status()
         json_response = response.json()

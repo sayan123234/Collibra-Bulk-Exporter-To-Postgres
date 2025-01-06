@@ -19,7 +19,7 @@ from sqlalchemy.exc import SQLAlchemyError
 # Local imports
 from graphql_query import get_query
 from get_assetType_name import get_asset_type_name
-from OauthAuth import oauth_bearer_token
+from OauthAuth import get_auth_header  # Changed from oauth_bearer_token to get_auth_header
 from get_asset_type import get_available_asset_type
 
 # Configure logging with both file and console handlers
@@ -55,7 +55,7 @@ setup_logging()
 if sys.platform == 'win32':
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, errors='replace')
     sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, errors='replace')
-    os.system('chcp 65001')  # Set console to UTF-8
+    os.system('chcp 65001')
     logging.debug("Windows console encoding set to UTF-8")
 
 # Load environment variables
@@ -76,8 +76,25 @@ with open('Collibra_Asset_Type_Id_Manager.json', 'r', encoding='utf-8') as file:
 
 ASSET_TYPE_IDS = data['ids']
 
+# Create session with request handling
 session = requests.Session()
-session.headers.update({'Authorization': f'Bearer {oauth_bearer_token()}'})
+
+def make_request(url, method='post', **kwargs):
+    """Make a request with automatic token refresh handling."""
+    try:
+        # Always get fresh headers before making a request
+        headers = get_auth_header()
+        if 'headers' in kwargs:
+            kwargs['headers'].update(headers)
+        else:
+            kwargs['headers'] = headers
+
+        response = getattr(session, method)(url=url, **kwargs)
+        response.raise_for_status()
+        return response
+    except requests.RequestException as error:
+        logging.error(f"Request failed: {str(error)}")
+        raise
 
 class PerformanceLogger:
     """Context manager for logging execution time of code blocks"""
@@ -362,67 +379,162 @@ def save_to_postgres(asset_type_name, data):
         finally:
             db_session.close()
 
-def fetch_data(asset_type_id, paginate, limit):
+def fetch_data(asset_type_id, paginate, limit, nested_offset=0, nested_limit=50):
+    """Fetch data with improved nested field handling"""
     try:
-        query = get_query(asset_type_id, f'"{paginate}"' if paginate else 'null')
+        query = get_query(asset_type_id, f'"{paginate}"' if paginate else 'null', nested_offset, nested_limit)
         variables = {'limit': limit}
-        logging.info(f"Sending request with variables: {variables} and paginate: {paginate}")
+        logging.debug(f"Sending GraphQL request for asset_type_id: {asset_type_id}, paginate: {paginate}, nested_offset: {nested_offset}")
 
         graphql_url = f"https://{base_url}/graphql/knowledgeGraph/v1"
-        response = session.post(
+        start_time = time.time()
+        
+        response = make_request(
             url=graphql_url,
             json={
                 'query': query,
                 'variables': variables
             }
         )
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as error:
+        
+        response_time = time.time() - start_time
+        logging.debug(f"GraphQL request completed in {response_time:.2f} seconds")
+
+        data = response.json()
+        
+        if 'errors' in data:
+            logging.error(f"GraphQL errors received: {data['errors']}")
+            return None
+            
+        return data
+    except Exception as error:
         logging.error(f'Error fetching data: {error}')
         return None
 
-def process_data(asset_type_id, limit=94):
-    """
-    Process asset data in batches with pagination
+def process_data(asset_type_id, limit=94, nested_limit=50):
+    """Process asset data with improved nested field handling"""
+    asset_type_name = get_asset_type_name(asset_type_id)
+    logging.info("="*60)
+    logging.info(f"Starting data processing for asset type: {asset_type_name} (ID: {asset_type_id})")
+    logging.info(f"Configuration - Batch Size: {limit}, Nested Limit: {nested_limit}")
+    logging.info("="*60)
     
-    Args:
-        asset_type_id (str): ID of the asset type to process
-        limit (int): Batch size for pagination
+    all_assets = []
+    paginate = None
+    batch_count = 0
+    start_time = time.time()
+
+    while True:
+        batch_count += 1
+        batch_start_time = time.time()
+        logging.info(f"\n[Batch {batch_count}] Starting new batch for {asset_type_name}")
+        logging.debug(f"[Batch {batch_count}] Pagination token: {paginate}")
         
-    Returns:
-        list: List of processed assets
-    """
-    with PerformanceLogger(f"process_data_{asset_type_id}"):
-        all_assets = []
-        paginate = None
-        batch_count = 0
+        # Get initial batch of assets
+        object_response = fetch_data(asset_type_id, paginate, limit, 0, nested_limit)
+        if not object_response or 'data' not in object_response or 'assets' not in object_response['data']:
+            logging.error(f"[Batch {batch_count}] Failed to fetch initial data")
+            break
 
-        while True:
-            batch_count += 1
-            logging.debug(f"Processing batch {batch_count} for asset type {asset_type_id}")
-            object_response = fetch_data(asset_type_id, paginate, limit)
+        current_assets = object_response['data']['assets']
+        if not current_assets:
+            logging.info(f"[Batch {batch_count}] No more assets to fetch")
+            break
 
-            if object_response and 'data' in object_response and 'assets' in object_response['data']:
-                assets = object_response['data']['assets']
+        logging.info(f"[Batch {batch_count}] Processing {len(current_assets)} assets")
 
-                if not assets:
-                    logging.info("No more assets to fetch.")
-                    break
+        # Process each asset
+        processed_assets = []
+        for asset_idx, asset in enumerate(current_assets, 1):
+            asset_id = asset['id']
+            asset_name = asset.get('displayName', 'Unknown Name')
+            logging.info(f"\n[Batch {batch_count}][Asset {asset_idx}/{len(current_assets)}] Processing: {asset_name}")
+            
+            # Initialize complete asset with base data
+            complete_asset = asset.copy()
+            
+            # Define nested fields to process
+            nested_fields = [
+                'stringAttributes', 
+                'multiValueAttributes', 
+                'numericAttributes', 
+                'dateAttributes', 
+                'booleanAttributes', 
+                'outgoingRelations', 
+                'incomingRelations', 
+                'responsibilities'
+            ]
 
-                paginate = assets[-1]['id']
+            # Process each nested field
+            for field in nested_fields:
+                field_data = []
+                if field in asset:
+                    field_data.extend(asset[field])
+                    
+                    # Continue fetching if initial data hits the limit
+                    if len(asset[field]) == nested_limit:
+                        offset = nested_limit
+                        while True:
+                            logging.info(f"[Batch {batch_count}][Asset {asset_idx}][{field}] "
+                                      f"Fetching more data from offset {offset}...")
+                            
+                            nested_response = fetch_data(asset_type_id, paginate, limit, offset, nested_limit)
+                            
+                            if not nested_response or 'data' not in nested_response or \
+                               'assets' not in nested_response['data'] or \
+                               not nested_response['data']['assets']:
+                                break
 
-                logging.info(f"Fetched {len(assets)} assets")
-                all_assets.extend(assets)
-            else:
-                logging.warning('No assets found or there was an error fetching data.')
-                break
+                            # Find the corresponding asset in the response
+                            matching_asset = None
+                            for resp_asset in nested_response['data']['assets']:
+                                if resp_asset['id'] == asset_id:
+                                    matching_asset = resp_asset
+                                    break
 
-        if not all_assets:
-            logging.warning("No data was fetched.")
+                            if not matching_asset or field not in matching_asset or \
+                               not matching_asset[field]:
+                                break
 
-        logging.info(f"Total assets fetched: {len(all_assets)}")
-        return all_assets
+                            additional_data = matching_asset[field]
+                            field_data.extend(additional_data)
+                            
+                            logging.info(f"[Batch {batch_count}][Asset {asset_idx}][{field}] "
+                                      f"Retrieved {len(additional_data)} more items. "
+                                      f"Total so far: {len(field_data)}")
+
+                            if len(additional_data) < nested_limit:
+                                break
+                                
+                            offset += nested_limit
+
+                logging.info(f"[Batch {batch_count}][Asset {asset_idx}][{field}] "
+                          f"Final count: {len(field_data)} items")
+                complete_asset[field] = field_data
+
+            processed_assets.append(complete_asset)
+            logging.info(f"[Batch {batch_count}][Asset {asset_idx}] Completed processing")
+
+        all_assets.extend(processed_assets)
+        
+        if len(current_assets) < limit:
+            logging.info(f"[Batch {batch_count}] Retrieved fewer assets than limit, ending pagination")
+            break
+            
+        paginate = current_assets[-1]['id']
+        batch_time = time.time() - batch_start_time
+        logging.info(f"\n[Batch {batch_count}] Completed batch in {batch_time:.2f}s")
+        logging.info(f"Total assets processed so far: {len(all_assets)}")
+
+    total_time = time.time() - start_time
+    logging.info("\n" + "="*60)
+    logging.info(f"[DONE] Completed processing {asset_type_name}")
+    logging.info(f"Total assets processed: {len(all_assets)}")
+    logging.info(f"Total batches processed: {batch_count}")
+    logging.info(f"Total time taken: {total_time:.2f} seconds")
+    logging.info("="*60)
+    
+    return all_assets
 
 def flatten_json(asset, asset_type_name):
     """
