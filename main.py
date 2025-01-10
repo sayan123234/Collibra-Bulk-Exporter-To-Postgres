@@ -286,7 +286,7 @@ def create_table_if_not_exists(db_session, table_name, columns):
 
 def save_to_postgres(asset_type_name, data):
     """
-    Save flattened asset data to PostgreSQL database with TRUNCATE-then-LOAD pattern
+    Save flattened asset data to PostgreSQL database with DROP-then-CREATE pattern
     
     Args:
         asset_type_name (str): Name of the asset type
@@ -319,13 +319,14 @@ def save_to_postgres(asset_type_name, data):
             logging.info(f"Total unique columns found: {len(base_columns)}")
             columns_dict = {col: 'TEXT' for col in base_columns}
             
-            # Create table with all columns (if it doesn't exist)
-            create_table_if_not_exists(db_session, table_name, columns_dict)
+            # Drop the table if it exists
+            drop_stmt = text(f"DROP TABLE IF EXISTS {table_name}")
+            db_session.execute(drop_stmt)
+            db_session.commit()
+            logging.info(f"Dropped table: {table_name}")
             
-            # TRUNCATE the table before loading new data
-            truncate_stmt = text(f"TRUNCATE TABLE {table_name}")
-            db_session.execute(truncate_stmt)
-            logging.info(f"Truncated table: {table_name}")
+            # Create fresh table with all columns
+            create_table_if_not_exists(db_session, table_name, columns_dict)
             
             # Create sanitized column mapping
             sanitized_columns = {}
@@ -336,7 +337,7 @@ def save_to_postgres(asset_type_name, data):
                 sanitized_columns[key] = safe_name
                 logging.debug(f"Column mapping: {key} -> {safe_name}")
 
-            # Prepare the insert statement (now a simple INSERT, no need for UPSERT)
+            # Prepare the insert statement
             columns_list = list(sanitized_columns.values())
             placeholders = ', '.join([f':{col}' for col in columns_list])
             
