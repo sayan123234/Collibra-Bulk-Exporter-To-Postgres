@@ -286,7 +286,7 @@ def create_table_if_not_exists(db_session, table_name, columns):
 
 def save_to_postgres(asset_type_name, data):
     """
-    Save flattened asset data to PostgreSQL database
+    Save flattened asset data to PostgreSQL database with TRUNCATE-then-LOAD pattern
     
     Args:
         asset_type_name (str): Name of the asset type
@@ -319,8 +319,13 @@ def save_to_postgres(asset_type_name, data):
             logging.info(f"Total unique columns found: {len(base_columns)}")
             columns_dict = {col: 'TEXT' for col in base_columns}
             
-            # Create table with all columns
+            # Create table with all columns (if it doesn't exist)
             create_table_if_not_exists(db_session, table_name, columns_dict)
+            
+            # TRUNCATE the table before loading new data
+            truncate_stmt = text(f"TRUNCATE TABLE {table_name}")
+            db_session.execute(truncate_stmt)
+            logging.info(f"Truncated table: {table_name}")
             
             # Create sanitized column mapping
             sanitized_columns = {}
@@ -331,19 +336,13 @@ def save_to_postgres(asset_type_name, data):
                 sanitized_columns[key] = safe_name
                 logging.debug(f"Column mapping: {key} -> {safe_name}")
 
-            # Log the final column mapping
-            logging.info(f"Final column mapping: {sanitized_columns}")
-
-            # Prepare the insert statement
+            # Prepare the insert statement (now a simple INSERT, no need for UPSERT)
             columns_list = list(sanitized_columns.values())
             placeholders = ', '.join([f':{col}' for col in columns_list])
-            update_columns = ', '.join([f'{col} = EXCLUDED.{col}' for col in columns_list if col != 'uuid'])
             
-            upsert_stmt = text(f"""
+            insert_stmt = text(f"""
                 INSERT INTO {table_name} ({', '.join(columns_list)})
                 VALUES ({placeholders})
-                ON CONFLICT (uuid) DO UPDATE SET
-                    {update_columns}
             """)
             
             # Prepare the data with consistent UUID handling
@@ -367,7 +366,7 @@ def save_to_postgres(asset_type_name, data):
             if prepared_data:
                 # Log sample of prepared data
                 logging.debug(f"Sample prepared row: {prepared_data[0]}")
-                db_session.execute(upsert_stmt, prepared_data)
+                db_session.execute(insert_stmt, prepared_data)
                 db_session.commit()
                 logging.info(f"Successfully saved {len(prepared_data)} records to {table_name}")
         
