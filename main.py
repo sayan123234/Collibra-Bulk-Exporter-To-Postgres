@@ -283,33 +283,89 @@ def create_table_if_not_exists(db_session, table_name, columns):
         db_session.rollback()
         logging.error(f"Error creating table {table_name}: {e}")
         raise
+def manage_view_dependencies(engine, schema='public'):
+    """
+    Save and restore view definitions during table refresh
+    Returns a dictionary of view definitions
+    """
+    try:
+        with engine.connect() as connection:
+            view_query = """
+            WITH RECURSIVE view_deps AS (
+                SELECT v.viewname,
+                       v.definition,
+                       0 as level,
+                       ARRAY[]::text[] as path
+                FROM pg_views v
+                WHERE schemaname = :schema
+                
+                UNION ALL
+                
+                SELECT v.viewname,
+                       v.definition,
+                       vd.level + 1,
+                       vd.path || v.viewname
+                FROM pg_views v
+                JOIN pg_depend d ON d.refobjid = v.viewname::regclass::oid
+                JOIN pg_rewrite r ON r.oid = d.objid
+                JOIN pg_class c ON c.oid = r.ev_class
+                JOIN view_deps vd ON c.relname = vd.viewname
+                WHERE v.schemaname = :schema
+                AND NOT v.viewname = ANY(vd.path)  -- Prevent cycles
+            )
+            SELECT viewname, definition, level
+            FROM view_deps
+            ORDER BY level DESC;
+            """
+            
+            result = connection.execute(text(view_query), {'schema': schema})
+            views = {row.viewname: {
+                'definition': row.definition,
+                'level': row.level
+            } for row in result}
+            
+            return views
+    except Exception as e:
+        logging.error(f"Error saving view definitions: {e}")
+        raise
+
+def restore_views(engine, views):
+    """
+    Restore views in correct dependency order
+    """
+    try:
+        with engine.connect() as connection:
+            for viewname, view_info in sorted(views.items(), key=lambda x: x[1]['level']):
+                try:
+                    connection.execute(text(view_info['definition']))
+                    logging.info(f"Restored view: {viewname}")
+                except Exception as e:
+                    logging.error(f"Error restoring view {viewname}: {e}")
+    except Exception as e:
+        logging.error(f"Error in restore_views: {e}")
+        raise
 
 def save_to_postgres(asset_type_name, data):
     """
-    Save flattened asset data to PostgreSQL database with DROP-then-CREATE pattern
-    
-    Args:
-        asset_type_name (str): Name of the asset type
-        data (list): List of flattened asset dictionaries
-        
-    Raises:
-        SQLAlchemyError: If database operations fail
+    Save flattened asset data to PostgreSQL database while preserving views
     """
     if not data:
         logging.warning(f"No data to save for {asset_type_name}")
         return
 
     with PerformanceLogger(f"save_to_postgres_{asset_type_name}"):
-        # Ensure asset_type_name is not None before sanitizing
         safe_asset_type_name = sanitize_identifier(asset_type_name or 'unknown_asset_type')
         table_name = f"collibra_{safe_asset_type_name}"
         
         db_session = SessionLocal()
         
         try:
-            # Log the incoming data structure
-            if data:
-                logging.info(f"Sample data keys: {list(data[0].keys())}")
+            # Save view definitions before dropping tables
+            logging.info("Saving view definitions...")
+            view_definitions = manage_view_dependencies(engine)
+            
+            if view_definitions:
+                logging.info(f"Saved {len(view_definitions)} view definitions")
             
             # Get columns from the flattened data
             base_columns = set()
@@ -319,8 +375,8 @@ def save_to_postgres(asset_type_name, data):
             logging.info(f"Total unique columns found: {len(base_columns)}")
             columns_dict = {col: 'TEXT' for col in base_columns}
             
-            # Drop the table if it exists
-            drop_stmt = text(f"DROP TABLE IF EXISTS {table_name}")
+            # Drop the table if it exists (CASCADE will drop dependent views)
+            drop_stmt = text(f"DROP TABLE IF EXISTS {table_name} CASCADE")
             db_session.execute(drop_stmt)
             db_session.commit()
             logging.info(f"Dropped table: {table_name}")
@@ -328,16 +384,15 @@ def save_to_postgres(asset_type_name, data):
             # Create fresh table with all columns
             create_table_if_not_exists(db_session, table_name, columns_dict)
             
-            # Create sanitized column mapping
+            # Insert data (your existing code for data insertion)
             sanitized_columns = {}
             for key in base_columns:
                 safe_name = sanitize_identifier(key)
                 if key == 'UUID of Asset':
                     safe_name = 'uuid'
                 sanitized_columns[key] = safe_name
-                logging.debug(f"Column mapping: {key} -> {safe_name}")
-
-            # Prepare the insert statement
+            
+            # Your existing insert logic here...
             columns_list = list(sanitized_columns.values())
             placeholders = ', '.join([f':{col}' for col in columns_list])
             
@@ -346,7 +401,6 @@ def save_to_postgres(asset_type_name, data):
                 VALUES ({placeholders})
             """)
             
-            # Prepare the data with consistent UUID handling
             prepared_data = []
             for row in data:
                 if not row.get('UUID of Asset'):
@@ -365,11 +419,15 @@ def save_to_postgres(asset_type_name, data):
                 prepared_data.append(prepared_row)
             
             if prepared_data:
-                # Log sample of prepared data
-                logging.debug(f"Sample prepared row: {prepared_data[0]}")
                 db_session.execute(insert_stmt, prepared_data)
                 db_session.commit()
                 logging.info(f"Successfully saved {len(prepared_data)} records to {table_name}")
+            
+            # Restore views after data is loaded
+            if view_definitions:
+                logging.info("Restoring views...")
+                restore_views(engine, view_definitions)
+                logging.info("Views restored successfully")
         
         except Exception as e:
             db_session.rollback()
