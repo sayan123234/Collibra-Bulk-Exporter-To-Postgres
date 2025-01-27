@@ -283,71 +283,150 @@ def create_table_if_not_exists(db_session, table_name, columns):
         db_session.rollback()
         logging.error(f"Error creating table {table_name}: {e}")
         raise
-def manage_view_dependencies(engine, schema='public'):
+def get_current_schema(engine):
+    """Get the current schema from the engine"""
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(text("SELECT current_schema()"))
+            current_schema = result.scalar()
+            logging.info(f"Current database schema: {current_schema}")
+            return current_schema
+    except Exception as e:
+        logging.error(f"Error getting current schema: {e}")
+        return 'public'
+
+def has_dependent_views(engine, table_name):
     """
-    Save and restore view definitions during table refresh
-    Returns a dictionary of view definitions
+    Check if a table has any dependent views using information_schema
     """
+    schema = get_current_schema(engine)
+    try:
+        with engine.connect() as connection:
+            # First check if table exists
+            table_exists_query = """
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.tables 
+                WHERE table_schema = :schema 
+                AND table_name = :table_name
+            );
+            """
+            
+            table_exists = connection.execute(
+                text(table_exists_query), 
+                {'schema': schema, 'table_name': table_name}
+            ).scalar()
+            
+            if not table_exists:
+                logging.info(f"Table {schema}.{table_name} does not exist yet")
+                return False
+            
+            # Check for dependent views using view_table_usage
+            check_query = """
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.view_table_usage v
+                WHERE v.table_schema = :schema
+                AND v.table_name = :table_name
+            );
+            """
+            
+            result = connection.execute(text(check_query), {
+                'schema': schema,
+                'table_name': table_name
+            })
+            
+            has_views = result.scalar()
+            return has_views
+            
+    except Exception as e:
+        logging.error(f"Error checking dependent views for table {table_name}: {e}")
+        return False
+
+def get_dependent_views(engine, table_name):
+    """
+    Get views that depend on a specific table using information_schema
+    """
+    schema = get_current_schema(engine)
+    logging.info(f"Finding views dependent on {schema}.{table_name}")
+    
     try:
         with engine.connect() as connection:
             view_query = """
             WITH RECURSIVE view_deps AS (
-                SELECT v.viewname,
-                       v.definition,
-                       0 as level,
-                       ARRAY[]::text[] as path
-                FROM pg_views v
-                WHERE schemaname = :schema
+                -- First level views directly dependent on our table
+                SELECT DISTINCT 
+                    vtu.view_name as viewname,
+                    pg_get_viewdef(vtu.view_name::regclass) as definition,
+                    0 as level,
+                    ARRAY[vtu.view_name] as path
+                FROM information_schema.view_table_usage vtu
+                WHERE vtu.table_schema = :schema
+                AND vtu.table_name = :table_name
                 
                 UNION ALL
                 
-                SELECT v.viewname,
-                       v.definition,
-                       vd.level + 1,
-                       vd.path || v.viewname
-                FROM pg_views v
-                JOIN pg_depend d ON d.refobjid = v.viewname::regclass::oid
-                JOIN pg_rewrite r ON r.oid = d.objid
-                JOIN pg_class c ON c.oid = r.ev_class
-                JOIN view_deps vd ON c.relname = vd.viewname
-                WHERE v.schemaname = :schema
-                AND NOT v.viewname = ANY(vd.path)  -- Prevent cycles
+                -- Recursively get views dependent on other views
+                SELECT DISTINCT 
+                    vtu.view_name,
+                    pg_get_viewdef(vtu.view_name::regclass),
+                    vd.level + 1,
+                    vd.path || vtu.view_name
+                FROM information_schema.view_table_usage vtu
+                JOIN view_deps vd ON vtu.table_name = vd.viewname
+                WHERE vtu.table_schema = :schema
+                AND NOT vtu.view_name = ANY(vd.path)  -- Prevent cycles
             )
             SELECT viewname, definition, level
             FROM view_deps
             ORDER BY level DESC;
             """
             
-            result = connection.execute(text(view_query), {'schema': schema})
+            result = connection.execute(text(view_query), {
+                'schema': schema,
+                'table_name': table_name
+            })
+            
             views = {row.viewname: {
                 'definition': row.definition,
                 'level': row.level
             } for row in result}
             
+            logging.info(f"Found {len(views)} dependent views for table {table_name}")
+            if views:
+                for viewname, view_info in views.items():
+                    logging.debug(f"Dependent view: {viewname} at level {view_info['level']}")
+            
             return views
+            
     except Exception as e:
-        logging.error(f"Error saving view definitions: {e}")
+        logging.error(f"Error getting dependent views for table {table_name}: {e}")
         raise
 
 def restore_views(engine, views):
     """
     Restore views in correct dependency order
     """
+    schema = get_current_schema(engine)
     try:
         with engine.connect() as connection:
             for viewname, view_info in sorted(views.items(), key=lambda x: x[1]['level']):
                 try:
-                    connection.execute(text(view_info['definition']))
-                    logging.info(f"Restored view: {viewname}")
+                    create_view_sql = f"CREATE OR REPLACE VIEW {schema}.{viewname} AS {view_info['definition']}"
+                    connection.execute(text(create_view_sql))
+                    connection.commit()
+                    logging.info(f"Restored dependent view: {schema}.{viewname}")
                 except Exception as e:
-                    logging.error(f"Error restoring view {viewname}: {e}")
+                    logging.error(f"Error restoring view {schema}.{viewname}: {e}")
+                    logging.error(f"View definition: {create_view_sql}")
+                    raise
     except Exception as e:
         logging.error(f"Error in restore_views: {e}")
         raise
 
 def save_to_postgres(asset_type_name, data):
     """
-    Save flattened asset data to PostgreSQL database while preserving views
+    Save flattened asset data to PostgreSQL database, preserving views only for tables that have them
     """
     if not data:
         logging.warning(f"No data to save for {asset_type_name}")
@@ -358,14 +437,17 @@ def save_to_postgres(asset_type_name, data):
         table_name = f"collibra_{safe_asset_type_name}"
         
         db_session = SessionLocal()
+        dependent_views = None
         
         try:
-            # Save view definitions before dropping tables
-            logging.info("Saving view definitions...")
-            view_definitions = manage_view_dependencies(engine)
-            
-            if view_definitions:
-                logging.info(f"Saved {len(view_definitions)} view definitions")
+            # First check if this table has any dependent views
+            if has_dependent_views(engine, table_name):
+                logging.info(f"Table {table_name} has dependent views, saving them...")
+                dependent_views = get_dependent_views(engine, table_name)
+                if dependent_views:
+                    logging.info(f"Found {len(dependent_views)} dependent views to preserve")
+            else:
+                logging.info(f"No dependent views found for table {table_name}")
             
             # Get columns from the flattened data
             base_columns = set()
@@ -375,7 +457,7 @@ def save_to_postgres(asset_type_name, data):
             logging.info(f"Total unique columns found: {len(base_columns)}")
             columns_dict = {col: 'TEXT' for col in base_columns}
             
-            # Drop the table if it exists (CASCADE will drop dependent views)
+            # Drop the table (CASCADE only if we have dependent views)
             drop_stmt = text(f"DROP TABLE IF EXISTS {table_name} CASCADE")
             db_session.execute(drop_stmt)
             db_session.commit()
@@ -384,15 +466,15 @@ def save_to_postgres(asset_type_name, data):
             # Create fresh table with all columns
             create_table_if_not_exists(db_session, table_name, columns_dict)
             
-            # Insert data (your existing code for data insertion)
+            # Prepare the data with consistent UUID handling
             sanitized_columns = {}
             for key in base_columns:
                 safe_name = sanitize_identifier(key)
                 if key == 'UUID of Asset':
                     safe_name = 'uuid'
                 sanitized_columns[key] = safe_name
-            
-            # Your existing insert logic here...
+
+            # Prepare the insert statement
             columns_list = list(sanitized_columns.values())
             placeholders = ', '.join([f':{col}' for col in columns_list])
             
@@ -401,6 +483,7 @@ def save_to_postgres(asset_type_name, data):
                 VALUES ({placeholders})
             """)
             
+            # Prepare the data
             prepared_data = []
             for row in data:
                 if not row.get('UUID of Asset'):
@@ -423,12 +506,16 @@ def save_to_postgres(asset_type_name, data):
                 db_session.commit()
                 logging.info(f"Successfully saved {len(prepared_data)} records to {table_name}")
             
-            # Restore views after data is loaded
-            if view_definitions:
-                logging.info("Restoring views...")
-                restore_views(engine, view_definitions)
-                logging.info("Views restored successfully")
-        
+            # After data insertion, restore views only if we saved any
+            if dependent_views:
+                logging.info("Restoring dependent views...")
+                try:
+                    restore_views(engine, dependent_views)
+                    logging.info("Dependent views restored successfully")
+                except Exception as e:
+                    logging.error(f"Failed to restore dependent views: {e}")
+                    raise
+            
         except Exception as e:
             db_session.rollback()
             logging.error(f"Error saving data for {asset_type_name}: {e}")
