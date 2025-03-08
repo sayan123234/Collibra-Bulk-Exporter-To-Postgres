@@ -1,9 +1,33 @@
-
 # Collibra-Bulk-Exporter
 
-This project helps in bulk exporting assets along with their related attributes, relations, and responsibilities by providing `assetTypeId(s)`.The tool stores the data directly into a PostgreSQL database. Asset data is saved in dynamically generated tables based on the `assetTypeName(s)` specified in the configuration.
+This project helps in bulk exporting assets along with their related attributes, relations, and responsibilities by providing `assetTypeId(s)`. The tool stores the data directly into a PostgreSQL database. Asset data is saved in dynamically generated tables based on the `assetTypeName(s)` specified in the configuration.
 
----
+## Features
+
+- **Bulk Export**: Export multiple asset types in parallel
+- **Complete Data**: Includes attributes, relations, and responsibilities
+- **Pagination Support**: Handles large datasets with automatic pagination
+- **PostgreSQL Integration**: Direct storage to PostgreSQL database
+- **View Preservation**: Preserves dependent views when updating tables
+- **Error Handling**: Robust error handling and logging
+- **Performance Monitoring**: Detailed performance logging
+
+## Project Structure
+
+```
+collibra_exporter/
+├── api/                  # API interaction modules
+│   ├── asset_types.py    # Asset type operations
+│   ├── client.py         # Collibra API client
+│   ├── graphql.py        # GraphQL query generation
+│   └── processor.py      # Data processing and transformation
+├── db/                   # Database modules
+│   └── postgres.py       # PostgreSQL operations
+├── utils/                # Utility modules
+│   ├── auth.py           # Authentication utilities
+│   └── common.py         # Common utility functions
+└── main.py               # Main application logic
+```
 
 ## Setup Instructions
 
@@ -25,11 +49,11 @@ To connect the tool with your Collibra instance, you need to set up OAuth creden
    - Copy the `clientId` and `clientSecret`.
    - Add them to the `.env` file as shown below.
 
----
+### Installation and Configuration
 
 Follow the steps below to set up and use the Collibra-Bulk-Exporter:
 
-### 1. Clone the Repository
+#### 1. Clone the Repository
 
 ```bash
 # Clone the repository from GitHub
@@ -39,7 +63,7 @@ $ git clone <repository-url>
 $ cd Collibra-Bulk-Exporter
 ```
 
-### 2. Create a Python Virtual Environment
+#### 2. Create a Python Virtual Environment
 
 ```bash
 # Create a virtual environment
@@ -53,14 +77,14 @@ $ env\Scripts\activate
 $ source env/bin/activate
 ```
 
-### 3. Install Dependencies
+#### 3. Install Dependencies
 
 ```bash
 # Install the required Python packages
 $ pip install -r requirements.txt
 ```
 
-### 4. Set Up the `.env` File
+#### 4. Set Up the `.env` File
 
 Create a `.env` file in the root directory of the project and add the following environment variables:
 
@@ -74,28 +98,26 @@ CLIENT_SECRET=your_client_secret
 DATABASE_URL=postgresql://db_username:your_strong_password@localhost:5432/your_database_name?options=-c%20search_path=your_schema_name
 ```
 
-### 5. Update Asset Type IDs
+#### 5. Update Asset Type IDs
 
-Edit the `Collibra_Asset_Type_Id_Manager.json` file in the root directory to include the asset type IDs you want to export. For example:
+Edit the `Collibra_Asset_Type_Id_Manager.json` file in the root directory to include the asset type IDs you want to export:
 
 ```json
 {
-    "assetTypeIds": [
+    "ids": [
         "asset_type_id_1",
         "asset_type_id_2"
     ]
 }
 ```
 
-### 6. Run the Application
+#### 6. Run the Application
 
 Run the script to save the assets to the PostgreSQL database:
 
 ```bash
 $ python main.py
 ```
-
----
 
 ## Database Integration Details
 
@@ -104,8 +126,7 @@ $ python main.py
 - **Timestamp**: The `last_modified_on` column tracks the last modification timestamp.
 - **Data Storage**: All additional attributes are stored as string columns.
 - **Upsert Strategy**: Updates existing records if they already exist, otherwise inserts new records.
-
----
+- **View Preservation**: Automatically preserves and restores dependent views.
 
 ## Troubleshooting
 
@@ -125,9 +146,7 @@ $ python main.py
 
 - Large datasets may take considerable time to process.
 - Monitor system resources during the operation.
-- Consider adding batch processing configurations if necessary.
-
----
+- Consider adjusting the `max_workers` parameter in `main.py` for parallel processing.
 
 ## Security Notes
 
@@ -136,13 +155,12 @@ $ python main.py
 - Limit database user permissions to only what is necessary.
 - Consider using environment-specific configurations.
 
----
-
 ## Future Enhancements
 
 - Support for multiple database backends.
 - Configurable batch processing for better performance.
 - Enhanced logging and monitoring features.
 - Advanced data transformation and enrichment capabilities.
+- Command-line interface for easier configuration.
 
 Enjoy using the Collibra-Bulk-Exporter!
