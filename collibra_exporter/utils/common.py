@@ -142,24 +142,48 @@ def safe_convert_to_str(value):
 
 def sanitize_identifier(name):
     """
-    Sanitize table/column names for database compatibility.
+    Sanitize table/column names for database compatibility by automatically fixing issues.
     
     Args:
         name (str): The name to sanitize
         
     Returns:
-        str: The sanitized name
+        str: The sanitized name that meets database standards
     """
     if name is None:
         return 'unnamed'
     
-    # Replace common problematic characters
+    # PostgreSQL reserved keywords (partial list)
+    RESERVED_KEYWORDS = {
+        'all', 'analyse', 'analyze', 'and', 'any', 'array', 'as', 'asc',
+        'asymmetric', 'authorization', 'between', 'binary', 'both', 'case',
+        'cast', 'check', 'collate', 'column', 'constraint', 'create', 'cross',
+        'current_date', 'current_role', 'current_time', 'current_timestamp',
+        'current_user', 'default', 'deferrable', 'desc', 'distinct', 'do',
+        'else', 'end', 'except', 'false', 'for', 'foreign', 'freeze', 'from',
+        'full', 'grant', 'group', 'having', 'ilike', 'in', 'initially', 'inner',
+        'intersect', 'into', 'is', 'isnull', 'join', 'leading', 'left', 'like',
+        'limit', 'localtime', 'localtimestamp', 'natural', 'not', 'notnull',
+        'null', 'off', 'offset', 'on', 'only', 'or', 'order', 'outer', 'over',
+        'overlaps', 'placing', 'primary', 'references', 'returning', 'right',
+        'select', 'session_user', 'similar', 'some', 'symmetric', 'table',
+        'then', 'to', 'trailing', 'true', 'union', 'unique', 'user', 'using',
+        'variadic', 'verbose', 'when', 'where', 'with'
+    }
+    
+    original_name = name
     sanitized = name.lower()
+    
+    # Replace any invalid characters with underscores
     sanitized = ''.join(c if c.isalnum() or c == '_' else '_' for c in sanitized)
     
     # Ensure it starts with a letter or underscore
-    if sanitized and sanitized[0].isdigit():
+    while sanitized and sanitized[0].isdigit():
         sanitized = f"_{sanitized}"
+    
+    # Handle reserved keywords by adding suffix
+    if sanitized in RESERVED_KEYWORDS:
+        sanitized = f"{sanitized}_col"
     
     # Remove consecutive underscores and trim length
     while '__' in sanitized:
@@ -170,5 +194,9 @@ def sanitize_identifier(name):
     
     # Remove trailing underscores
     sanitized = sanitized.rstrip('_')
+    
+    # Final fallback if we ended up with nothing valid
+    if not sanitized:
+        sanitized = 'unnamed'
     
     return sanitized
