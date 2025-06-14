@@ -122,7 +122,7 @@ $ python main.py
 ## Database Integration Details
 
 - **Table Creation**: Dynamically creates tables for each asset type.
-- **Primary Key**: The `uuid` column from the Collibra asset is used as the primary key.
+- **Primary Key**: The `full name` column from the Collibra asset is used as the primary key.
 - **Timestamp**: The `last_modified_on` column tracks the last modification timestamp.
 - **Data Storage**: All additional attributes are stored as string columns.
 - **Upsert Strategy**: Updates existing records if they already exist, otherwise inserts new records.
