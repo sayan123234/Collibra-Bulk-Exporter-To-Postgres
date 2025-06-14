@@ -205,7 +205,7 @@ def flatten_json(asset, asset_type_name):
             target_or_source = 'target' if relation_direction == 'outgoingRelations' else 'source'
             
             if relation_direction == 'outgoingRelations':
-                rel_type = f"{relation.get(target_or_source, {}).get('type', {}).get('name')} {role_type} {asset_type_name}"
+                rel_type = f" {asset_type_name} {role_type} {relation.get(target_or_source, {}).get('type', {}).get('name')}"
             else:
                 rel_type = f"{asset_type_name} {role_type} {relation.get(target_or_source, {}).get('type', {}).get('name')}"
                 
