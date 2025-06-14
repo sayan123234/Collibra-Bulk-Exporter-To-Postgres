@@ -202,7 +202,7 @@ def create_table_if_not_exists(table_name, columns):
         logger.info(f"Creating table {table_name} with columns: {list(columns.keys())}")
         
         columns_def = []
-        columns_def.append("uuid VARCHAR PRIMARY KEY")
+        columns_def.append("asset_id VARCHAR PRIMARY KEY")
         
         for col_name, _ in columns.items():
             if col_name != 'UUID of Asset':
@@ -283,7 +283,7 @@ def save_to_postgres(asset_type_name, data):
             for key in base_columns:
                 safe_name = sanitize_identifier(key)
                 if key == 'UUID of Asset':
-                    safe_name = 'uuid'
+                    safe_name = 'asset_id'
                 sanitized_columns[key] = safe_name
 
             # Prepare the insert statement
