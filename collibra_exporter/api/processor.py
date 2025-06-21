@@ -211,20 +211,20 @@ def flatten_json(asset, asset_type_name):
                 
             
             target_source_obj = relation.get(target_or_source, {})
-            display_name = target_source_obj.get('fullName', '').strip()
-            # asset_id = target_source_obj.get('id')
+            display_name = target_source_obj.get('displayName', '').strip()
+            asset_id = target_source_obj.get('fullName')
             
             if display_name:
                 relation_types[rel_type].append(display_name)
-                # if asset_id:
-                #     relation_ids[f"{rel_type} Asset IDs"].append(asset_id)
+                if asset_id:
+                    relation_ids[f"{rel_type}_id"].append(asset_id)
 
     # Add relations and their IDs to flattened data
     for rel_type, values in relation_types.items():
         flattened[rel_type] = ', '.join(values) if values else None
-        # id_key = f"{rel_type} Asset IDs"
-        # if id_key in relation_ids:
-        #     flattened[id_key] = ', '.join(relation_ids[id_key]) if relation_ids[id_key] else None
+        id_key = f"{rel_type}_id"
+        if id_key in relation_ids:
+            flattened[id_key] = ', '.join(relation_ids[id_key]) if relation_ids[id_key] else None
 
     # Final pass to remove any remaining None or empty string values
     for key, value in list(flattened.items()):
